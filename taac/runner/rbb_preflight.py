@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import csv
 import ipaddress
+import math
 import os
 import re
 import stat
@@ -21,6 +22,9 @@ from pathlib import Path
 
 from taac.runner.oss_exceptions import OSSConfigError
 from taac.runner.oss_secrets import get_oss_dut_credentials, load_oss_secrets
+from taac.testconfigs.routing.util.bgp_rbb_limits import (
+    MAX_RBB_ADVERTISED_PREFIX_COUNT,
+)
 
 _MAX_INPUT_BYTES = 1024 * 1024
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -204,24 +208,169 @@ def _validate_circuit_shape(path: Path) -> None:
             )
 
 
-def _validate_traffic_contract() -> None:
+_RBB_SUITES = frozenset(
+    ("base", "state-audit", "traffic-foundation", "tail-decap", "resilience")
+)
+
+
+def _validate_resilience_inputs() -> None:
+    """Validate optional resilience settings before contacting the lab."""
+
+    core_index = os.environ.get("TAAC_RBB_RESILIENCE_CORE_PC_INDEX", "").strip()
+    if core_index:
+        try:
+            parsed_index = int(core_index)
+        except ValueError as exc:
+            raise OSSConfigError(
+                "TAAC_RBB_RESILIENCE_CORE_PC_INDEX must be a non-negative integer"
+            ) from exc
+        if parsed_index < 0:
+            raise OSSConfigError(
+                "TAAC_RBB_RESILIENCE_CORE_PC_INDEX must be a non-negative integer"
+            )
+
+    min_share_name = "TAAC_RBB_RESILIENCE_MIN_SELECTED_PATH_SHARE_PCT"
+    min_share = os.environ.get(min_share_name, "").strip()
+    if min_share:
+        try:
+            parsed_share = float(min_share)
+        except ValueError as exc:
+            raise OSSConfigError(
+                f"{min_share_name} must be finite and in (0, 100]"
+            ) from exc
+        if not math.isfinite(parsed_share) or not 0 < parsed_share <= 100:
+            raise OSSConfigError(
+                f"{min_share_name} must be finite and in (0, 100]"
+            )
+
+    max_loss_name = "TAAC_RBB_RESILIENCE_MAX_LOSS_PCT"
+    max_loss = os.environ.get(max_loss_name, "").strip()
+    if max_loss:
+        try:
+            parsed_loss = float(max_loss)
+        except ValueError as exc:
+            raise OSSConfigError(
+                f"{max_loss_name} must be finite and in [0, 100]"
+            ) from exc
+        if not math.isfinite(parsed_loss) or not 0 <= parsed_loss <= 100:
+            raise OSSConfigError(
+                f"{max_loss_name} must be finite and in [0, 100]"
+            )
+
+
+def _validate_optional_integer(
+    name: str, *, minimum: int, maximum: int | None = None
+) -> None:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return
     try:
-        advertised_start = ipaddress.ip_address(os.environ["TAAC_RBB_IXIA_TAIL_PREFIX"])
-        advertised = ipaddress.ip_network(
-            f"{advertised_start}/{os.environ['TAAC_RBB_IXIA_TAIL_PREFIX_LEN']}",
-            strict=False,
+        value = int(raw_value.strip())
+    except ValueError as exc:
+        raise OSSConfigError(f"{name} must be an integer") from exc
+    if value < minimum or (maximum is not None and value > maximum):
+        if maximum is None:
+            requirement = f"at least {minimum}"
+        else:
+            requirement = f"in {minimum}..{maximum}"
+        raise OSSConfigError(f"{name} must be an integer {requirement}")
+
+
+def _validate_traffic_foundation_inputs() -> None:
+    """Validate optional traffic tuning before importing the test factory."""
+
+    _validate_optional_integer("TAAC_RBB_EDGE_BANDWIDTH_GBPS", minimum=1)
+    _validate_optional_integer(
+        "TAAC_RBB_TRAFFIC_LINE_RATE", minimum=1, maximum=100
+    )
+    _validate_optional_integer("TAAC_RBB_TRAFFIC_FRAME_SIZE", minimum=64)
+    _validate_optional_integer("TAAC_RBB_TRAFFIC_SAMPLE_SECONDS", minimum=1)
+    _validate_optional_integer("TAAC_RBB_TRAFFIC_DRAIN_SECONDS", minimum=1)
+    _validate_optional_integer(
+        "TAAC_RBB_TRAFFIC_RATE_TOLERANCE_PCT", minimum=1, maximum=100
+    )
+    _validate_optional_integer(
+        "TAAC_RBB_COUNTER_ABSOLUTE_TOLERANCE", minimum=1
+    )
+
+    name = "TAAC_RBB_COUNTER_TOLERANCE_PCT"
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return
+    try:
+        value = float(raw_value.strip())
+    except ValueError as exc:
+        raise OSSConfigError(f"{name} must be finite and in [0, 100]") from exc
+    if not math.isfinite(value) or not 0 <= value <= 100:
+        raise OSSConfigError(f"{name} must be finite and in [0, 100]")
+
+
+def _advertised_ipv6_range(
+    *,
+    start: str,
+    prefix_length: str,
+    prefix_count: str,
+    label: str,
+) -> tuple[ipaddress.IPv6Network, int, int]:
+    """Validate one adjacent IXIA IPv6 prefix range."""
+    try:
+        advertised_start = ipaddress.ip_address(start)
+        length = int(prefix_length)
+        count = int(prefix_count)
+        advertised = ipaddress.ip_network(f"{advertised_start}/{length}", strict=False)
+    except ValueError as exc:
+        raise OSSConfigError(f"The IXIA {label}-prefix contract is not valid") from exc
+    if not isinstance(advertised, ipaddress.IPv6Network):
+        raise OSSConfigError(f"The IXIA {label}-prefix contract must use IPv6")
+    if count < 1:
+        raise OSSConfigError(f"The IXIA {label}-prefix count must be positive")
+    if count > MAX_RBB_ADVERTISED_PREFIX_COUNT:
+        raise OSSConfigError(
+            f"The IXIA {label}-prefix count must not exceed "
+            f"{MAX_RBB_ADVERTISED_PREFIX_COUNT}"
         )
-        steered = ipaddress.ip_network(os.environ["TAAC_RBB_TAIL_PREFIX"], strict=True)
-        count = int(os.environ["TAAC_RBB_IXIA_TAIL_PREFIX_COUNT"])
-    except (KeyError, ValueError) as exc:
-        raise OSSConfigError("The IXIA tail-prefix contract is not valid") from exc
-    if advertised.version != 6 or steered.version != 6:
-        raise OSSConfigError("The IXIA tail-prefix contract must use IPv6")
     if advertised_start != advertised.network_address:
         raise OSSConfigError(
-            "TAAC_RBB_IXIA_TAIL_PREFIX must be the network address for "
-            "TAAC_RBB_IXIA_TAIL_PREFIX_LEN"
+            f"TAAC_RBB_IXIA_{label.upper()}_PREFIX must be the network address "
+            f"for TAAC_RBB_IXIA_{label.upper()}_PREFIX_LEN"
         )
+    last_address = (
+        int(advertised.network_address) + count * advertised.num_addresses - 1
+    )
+    if last_address > (1 << 128) - 1:
+        raise OSSConfigError(f"The IXIA {label}-prefix range exceeds IPv6 space")
+    return advertised, count, last_address
+
+
+def _validate_traffic_contract(suite: str) -> None:
+    try:
+        advertised, count, tail_last = _advertised_ipv6_range(
+            start=os.environ["TAAC_RBB_IXIA_TAIL_PREFIX"],
+            prefix_length=os.environ["TAAC_RBB_IXIA_TAIL_PREFIX_LEN"],
+            prefix_count=os.environ["TAAC_RBB_IXIA_TAIL_PREFIX_COUNT"],
+            label="tail",
+        )
+        steered = ipaddress.ip_network(os.environ["TAAC_RBB_TAIL_PREFIX"], strict=True)
+    except KeyError as exc:
+        raise OSSConfigError("The IXIA tail-prefix contract is not valid") from exc
+    except ValueError as exc:
+        raise OSSConfigError("The IXIA tail-prefix contract is not valid") from exc
+    if steered.version != 6:
+        raise OSSConfigError("The IXIA tail-prefix contract must use IPv6")
+
+    if suite == "traffic-foundation":
+        head, _, head_last = _advertised_ipv6_range(
+            start=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX", "2001:db8:feed::"),
+            prefix_length=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX_LEN", "64"),
+            prefix_count=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX_COUNT", "1"),
+            label="head",
+        )
+        tail_start = int(advertised.network_address)
+        head_start = int(head.network_address)
+        if tail_start <= head_last and head_start <= tail_last:
+            raise OSSConfigError("IXIA head and tail advertised pools must not overlap")
+        return
+
     if advertised != steered or count != 1:
         raise OSSConfigError(
             "TAAC_RBB_TAIL_PREFIX must equal the single prefix advertised by IXIA"
@@ -234,9 +383,12 @@ def run_preflight(
     with_traffic: bool,
     setup_duts: bool = False,
     setup_dut_edges: bool = False,
+    suite: str = "base",
 ) -> tuple[str, str]:
     """Validate local inputs and return the configured DUT names."""
 
+    if suite not in _RBB_SUITES:
+        raise OSSConfigError(f"Unknown RBB suite {suite!r}")
     config_dir = config_dir.expanduser().resolve()
     if not config_dir.is_dir():
         raise OSSConfigError(f"Configuration directory does not exist: {config_dir}")
@@ -252,6 +404,11 @@ def run_preflight(
             # Matches docker/run_taac_docker.sh: an explicitly exported host value
             # has precedence over the non-secret profile.
             os.environ.setdefault(name, value)
+
+    if suite == "resilience":
+        _validate_resilience_inputs()
+    elif suite == "traffic-foundation":
+        _validate_traffic_foundation_inputs()
 
     # Both local files are convenience inputs, not required interfaces. This
     # keeps the wrapper usable in CI and in organizations that inject settings
@@ -300,7 +457,7 @@ def run_preflight(
         for name in ("TAAC_RBB_IXIA_CHASSIS", "TAAC_IXIA_API_SERVER"):
             if _is_endpoint_placeholder(os.environ[name]):
                 raise OSSConfigError(f"Replace the placeholder value for {name}")
-        _validate_traffic_contract()
+        _validate_traffic_contract(suite)
 
     _validate_device_info(device_path, r1_host, r2_host)
     _validate_circuit_shape(circuit_path)
@@ -351,6 +508,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--with-traffic", action="store_true")
     parser.add_argument("--setup-duts", action="store_true")
     parser.add_argument("--setup-dut-edges", action="store_true")
+    parser.add_argument("--suite", choices=sorted(_RBB_SUITES), default="base")
     return parser
 
 
@@ -362,6 +520,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             with_traffic=args.with_traffic,
             setup_duts=args.setup_duts,
             setup_dut_edges=args.setup_dut_edges,
+            suite=args.suite,
         )
     except OSSConfigError as exc:
         print(f"Configuration check failed: {exc}", file=sys.stderr)

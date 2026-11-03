@@ -366,10 +366,11 @@ def _openr_reachability_routes(
 ) -> tuple[RbbRouteExpectation, ...]:
     # The PR #46 bootstrap's OpenR redistribution regex exports only fboss4000,
     # whose complete expected inventory is the local IPv4 and IPv6 loopback.
-    # Each remote route must resolve over every equal-cost core LAG.
-    return _remote_loopback_routes(
-        "r1", next_hop_count=len(topology.r1.core_pcs)
-    ) + _remote_loopback_routes("r2", next_hop_count=len(topology.r2.core_pcs))
+    # Reachability does not imply that every declared core LAG has the same
+    # OpenR metric. Require the exact OPENR-owned prefixes and a resolved FIB;
+    # per-core adjacency/NDP health is validated independently by TC-111, and
+    # disruption cases assert their own scenario-specific path width.
+    return _remote_loopback_routes("r1") + _remote_loopback_routes("r2")
 
 
 def _core_ndp(topology: RbbTopology) -> tuple[RbbNdpExpectation, ...]:

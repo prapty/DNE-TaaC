@@ -100,7 +100,8 @@ class AbstractTrafficGenerator(ABC):
         Return packet loss stats as list of dicts.
 
         Each dict has: identifier, packet_loss_duration, packet_loss_percentage,
-        frame_delta.
+        frame_delta, and (when supplied by the backend) tx_frames/rx_frames and
+        tx_bytes/rx_bytes.
         """
         ...
 
@@ -108,6 +109,15 @@ class AbstractTrafficGenerator(ABC):
     def clear_traffic_stats(self) -> None:
         """Clear captured stats between measurements."""
         ...
+
+    def supports_controller_traffic_stats_reset(self) -> bool:
+        """Whether ``clear_traffic_stats`` resets cumulative device counters.
+
+        A backend which only clears local caches must return ``False``. Tests
+        that need isolated percentage-loss windows can then fail before any
+        disruptive action instead of silently evaluating cumulative traffic.
+        """
+        return False
 
     @abstractmethod
     def get_traffic_start_time(self) -> float:

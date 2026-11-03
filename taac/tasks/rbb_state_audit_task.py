@@ -11,8 +11,11 @@ change is required.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
+import math
 import re
+import time
 import typing as t
 
 from taac.constants import TestCaseFailure
@@ -362,6 +365,13 @@ class RbbStateAuditTask(BaseTask):
         super().__init__(hostname, description, ixia, logger, shared_data)
 
     async def run(self, params: dict[str, t.Any]) -> None:
+        """Run one audit, optionally polling until an exact state converges.
+
+        The default remains a single read.  Disruption playbooks may provide a
+        bounded ``timeout_seconds`` and ``poll_interval_seconds`` so recovery is
+        accepted as soon as the complete expected state returns, without a
+        fixed sleep or an unbounded retry loop.
+        """
         _reject_unknown(
             params,
             {
@@ -372,9 +382,45 @@ class RbbStateAuditTask(BaseTask):
                 "mysids",
                 "active_services",
                 "interfaces_up",
+                "timeout_seconds",
+                "poll_interval_seconds",
             },
             "rbb_state_audit parameters",
         )
+        raw_timeout = params.get("timeout_seconds", 0)
+        raw_interval = params.get("poll_interval_seconds", 2)
+        if isinstance(raw_timeout, bool) or not isinstance(raw_timeout, (int, float)):
+            raise ValueError("timeout_seconds must be a finite number")
+        if isinstance(raw_interval, bool) or not isinstance(raw_interval, (int, float)):
+            raise ValueError("poll_interval_seconds must be a finite number")
+        timeout_seconds = float(raw_timeout)
+        poll_interval_seconds = float(raw_interval)
+        if not math.isfinite(timeout_seconds):
+            raise ValueError("timeout_seconds must be a finite number")
+        if not math.isfinite(poll_interval_seconds):
+            raise ValueError("poll_interval_seconds must be a finite number")
+        if timeout_seconds < 0:
+            raise ValueError("timeout_seconds must be non-negative")
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
+
+        audit_params = dict(params)
+        audit_params.pop("timeout_seconds", None)
+        audit_params.pop("poll_interval_seconds", None)
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                await self._run_once(audit_params)
+                return
+            except TestCaseFailure:
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(
+                    min(poll_interval_seconds, max(0.0, deadline - time.monotonic()))
+                )
+
+    async def _run_once(self, params: dict[str, t.Any]) -> None:
+        """Evaluate one exact state snapshot."""
         hostname = params.get("hostname") or self.hostname
         if not hostname:
             raise ValueError("rbb_state_audit requires 'hostname'")

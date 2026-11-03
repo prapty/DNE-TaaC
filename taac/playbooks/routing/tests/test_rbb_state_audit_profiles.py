@@ -146,31 +146,27 @@ class RbbStateAuditProfileTest(unittest.TestCase):
         self.assertEqual({route.role for route in profile.routes}, {"r1", "r2"})
         self.assertTrue(all(route.client == "OPENR" for route in profile.routes))
         self.assertTrue(all(route.require_fib for route in profile.routes))
-        self.assertTrue(all(route.next_hop_count == 2 for route in profile.routes))
+        self.assertTrue(all(route.next_hop_count is None for route in profile.routes))
         self.assertTrue(
-            all(route.next_hop_interface_count == 2 for route in profile.routes)
+            all(route.next_hop_interface_count is None for route in profile.routes)
         )
-        self.assertTrue(
-            all(route.next_hop_scope == "link_local" for route in profile.routes)
-        )
+        self.assertTrue(all(route.next_hop_scope is None for route in profile.routes))
         self.assertEqual(
             {route.prefix.split("/")[-1] for route in profile.routes}, {"32", "128"}
         )
 
-    def test_openr_reachability_requires_link_local_ecmp_per_core_path(self) -> None:
+    def test_openr_reachability_does_not_infer_ecmp_width_from_wiring(self) -> None:
         profile = next(
             profile
             for profile in build_rbb_state_audit_profiles(_topology(3))
             if profile.testplan_id == "phase2:TC-110"
         )
         self.assertEqual(len(profile.routes), 4)
-        self.assertTrue(all(route.next_hop_count == 3 for route in profile.routes))
+        self.assertTrue(all(route.next_hop_count is None for route in profile.routes))
         self.assertTrue(
-            all(route.next_hop_interface_count == 3 for route in profile.routes)
+            all(route.next_hop_interface_count is None for route in profile.routes)
         )
-        self.assertTrue(
-            all(route.next_hop_scope == "link_local" for route in profile.routes)
-        )
+        self.assertTrue(all(route.next_hop_scope is None for route in profile.routes))
 
     def test_profile_metadata_and_resolved_route_contract_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "invalid RBB testplan ID"):

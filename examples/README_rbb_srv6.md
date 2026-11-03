@@ -193,9 +193,9 @@ TAAC_RBB_TAIL_PREFIX=<inner-destination-network>/64
 ```
 
 All committed addresses are from the IPv6 documentation block and are not
-operator allocations. The complete set of optional knobs, including loopbacks
-and traffic parameters, is in
-`taac/testconfigs/routing/util/bgp_rbb_constants.py`.
+operator allocations. The supported runtime settings, including loopbacks,
+traffic parameters, and resilience controls, are documented in
+`examples/rbb_srv6_profile.env.example`.
 
 If the device inventory service cannot identify the boxes, set
 `TAAC_RBB_R1_HARDWARE` and `TAAC_RBB_R2_HARDWARE` to the corresponding inventory
@@ -225,6 +225,14 @@ Build the TAAC image once before checking or running the hardware workflow:
 ./docker/build-taac-image.sh
 ```
 
+The launcher uses the Docker helper's `fboss-taac` default tag. If the local
+runtime requires a fully qualified image name (for example Podman storing the
+same image as `localhost/fboss-taac:latest`), select it explicitly:
+
+```bash
+./scripts/run-rbb-srv6.sh --image localhost/fboss-taac:latest --check
+```
+
 Validate all local inputs before contacting the lab:
 
 ```bash
@@ -234,10 +242,13 @@ Validate all local inputs before contacting the lab:
 This checks the secrets schema and permissions, required settings, DUT rows,
 CSV shape, topology relationships, placeholder endpoints, and—when
 `--with-traffic` is present—the IXIA credentials, controller/chassis, ports,
-and advertised-prefix contract. It runs inside the already-built TAAC image but
-does not contact a DUT or reserve IXIA. The same preflight runs automatically
-inside the single container used for every real run; Docker remains the only
-host-side dependency.
+and advertised-prefix contract. For `--suite traffic-foundation`, it also
+validates the optional bandwidth, line-rate, frame-size, timing, and tolerance
+settings. For `--suite resilience`, it validates the optional core-index,
+selected-path-share, and maximum-loss numeric ranges.
+It runs inside the already-built TAAC image but does not contact a DUT or
+reserve IXIA. The same preflight runs automatically inside the single container
+used for every real run; Docker remains the only host-side dependency.
 
 ### Case 1: freshly installed FBOSS image
 
@@ -375,7 +386,92 @@ TAAC's existing global IXIA advertisement allowlist stays enabled by default.
 If an isolated lab uses an explicitly owned prefix outside that allowlist, set
 `TAAC_RBB_SKIP_ADVERTISED_PREFIXES_CHECK=1` in `rbb.env`. This opt-out applies
 only to the RBB TestConfig; preflight and the factory still restrict IXIA to
-the single exact IPv6 prefix above.
+the single exact IPv6 prefix above for the base, tail-decap, and resilience
+suites. The traffic-foundation suite instead validates its explicitly declared,
+non-overlapping head and tail prefix ranges.
+
+### Select a test suite
+
+The launcher defaults to the original three-uSID route-lifecycle suite. The
+follow-up suites use the same inventory, credentials, topology discovery,
+optional DUT bootstrap, and optional DUT-edge setup; select one explicitly
+with `--suite`:
+
+| Suite | Coverage | IXIA requirement |
+| --- | --- | --- |
+| `base` | Original three-uSID steering and route-owner lifecycle | Optional |
+| `state-audit` | Default full read-only common audits: OpenR route ownership/reachability and per-core NDP resolution | None |
+| `traffic-foundation` | Phase 1 TC-05/06/07/13/14/17: bidirectional route propagation, throughput/loss, and IXIA-to-DUT counter correlation | Required |
+| `tail-decap` | Phase 2 TC-24: final-uSID decapsulation and inner-table lookup | Required |
+| `resilience` | Phase 2 TC-15/104, partial TC-30, and adapted TC-99: warmboot, bgpd restart, and edge outage | Required; RESTPy/TaacIxia only |
+
+The TC-05/06/07 IXIA received-route assertions use IxNetwork's RESTPy learned
+route tables and therefore require the RESTPy/TaacIxia backend. An OTG run
+fails at that evidence gate with an explicit unsupported-backend message; the
+suite does not silently claim learned-route coverage that OTG cannot provide.
+The resilience suite also fails closed on any backend that cannot reset the
+controller's cumulative traffic counters. Its disruption and recovered loss
+windows therefore require RESTPy/TaacIxia; OTG currently clears only local
+samples and is rejected by the capability gate before any resilience
+disruption. Optional DUT bootstrap and edge setup, when explicitly requested,
+run earlier as test-configuration setup tasks and retain their normal guarded
+teardown behavior.
+
+The traffic-foundation rate check defaults to a 400-Gbps edge running at 10%
+line rate. Set `TAAC_RBB_EDGE_BANDWIDTH_GBPS` and
+`TAAC_RBB_TRAFFIC_LINE_RATE` to match the selected IXIA ports. Optional sample,
+drain, frame-size, rate-tolerance, and DUT-counter-tolerance inputs are listed
+in `examples/rbb_srv6_profile.env.example`.
+
+Examples for an already configured lab:
+
+```bash
+# Device-only common-state checks.
+./scripts/run-rbb-srv6.sh --suite state-audit
+
+# Traffic-backed functional suites.
+./scripts/run-rbb-srv6.sh --suite traffic-foundation --with-traffic
+./scripts/run-rbb-srv6.sh --suite tail-decap --with-traffic
+./scripts/run-rbb-srv6.sh --suite resilience --with-traffic
+```
+
+For a fresh image, add the same explicit mutation flags used by the base suite:
+
+```bash
+./scripts/run-rbb-srv6.sh --suite traffic-foundation \
+  --setup-duts --with-traffic --setup-dut-edges
+```
+
+`resilience` intentionally restarts FBOSS agents or bgpd and temporarily
+disables one declared core or IXIA-edge interface. Run it only on a dedicated
+testbed. A guarded cleanup marker is armed immediately before each mutation and
+is disarmed only after the post-recovery audit succeeds. If recovery fails, the
+marker remains armed so best-effort cleanup retries that service or interface,
+then independently removes the temporary TE_AGENT route and stops traffic. The
+warmboot cases also have a split-agent fail-safe recovery step. TC-30 verifies
+R2 End.DT46/MySID, route, service, and traffic restoration, but is labeled
+partial because the base bootstrap does not provision a QoS policy whose
+restoration could be checked. The partial Binding-SID TC-22 assessment is
+excluded because the base topology does not program a Binding SID.
+
+TC-100 is also partial and excluded from the public suite. The two-node
+zig-zag bootstrap pins different SRv6 legs to different core port-channels, so
+both links are required rather than interchangeable failover paths. Full
+TC-100 automation requires failover-capable MySID and underlay next-hop groups.
+The `TAAC_RBB_RESILIENCE_CORE_PC_*` and selected-path-share settings are
+reserved for a custom configuration that explicitly opts into that partial
+profile; `--check --suite resilience` still validates their numeric ranges
+when they are supplied.
+
+The resilience cases reset controller counters immediately before each event,
+record loss from that isolated disruption window, and reset again before
+requiring a separate recovered window to be lossless. Because the source plan
+does not define one common SLA for warmboot, bgpd restart, and link convergence,
+the disruption measurement is informational by default. Set
+`TAAC_RBB_RESILIENCE_MAX_LOSS_PCT` to enforce an approved maximum for the lab;
+the same maximum is enforced for adapted TC-99 while that case also requires
+observable edge-outage loss. This setting does not relax the strict
+post-recovery check.
 
 ---
 
@@ -433,11 +529,24 @@ eBGP neighbor, and iBGP IPv6 AFI settings. It snapshots the exact originals as
 the snapshots during teardown. A stale snapshot blocks mutation so an
 interrupted run cannot silently overwrite its recovery point.
 
-For the traffic qualification, set `TAAC_RBB_ENCAP_COUNTER_CMD` / `_REGEX` and
-`TAAC_RBB_DECAP_COUNTER_CMD` / `_REGEX` to counters that identify the actual
-SRv6 encap and decap objects on your platform. The portable defaults are useful
-path counters, but they do not by themselves distinguish SRv6 traffic from
-ordinary IPv6 forwarding.
+For the base SRv6 traffic qualification, set `TAAC_RBB_ENCAP_COUNTER_CMD` /
+`_REGEX` and `TAAC_RBB_DECAP_COUNTER_CMD` / `_REGEX` to counters that identify
+the actual SRv6 encap and decap objects on your platform. The portable defaults
+are useful path counters, but they do not by themselves distinguish SRv6
+traffic from ordinary IPv6 forwarding.
+
+The `traffic-foundation` TC-17 evidence uses a narrower, structured contract:
+it reads the fixed `fboss2 show interface <name> counters` command for the
+selected IXIA edge and every declared physical member of every core
+port-channel. It sums all eligible core-member deltas, correlates ingress,
+core, and egress packet counts with the exact IXIA traffic item, and requires
+the matching DUT byte counters to advance. Byte counters remain path evidence
+rather than an IXIA correlation requirement because some IxNetwork Traffic
+Item Statistics views omit Tx/Rx byte columns. Arbitrary counter command and
+regular-expression environment overrides are not accepted by this suite. The
+resilience core-outage check uses the same structured counter reader and sums
+every member of the surviving port-channel before asserting that traffic
+advanced.
 
 ---
 

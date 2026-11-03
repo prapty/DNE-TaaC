@@ -591,6 +591,8 @@ class OtgTrafficGen(AbstractTrafficGenerator):
         for fm in resp.flow_metrics:
             tx = int(fm.frames_tx or 0)
             rx = int(fm.frames_rx or 0)
+            tx_bytes = int(fm.bytes_tx or 0)
+            rx_bytes = int(fm.bytes_rx or 0)
             loss = fm.loss
             if loss is None and tx > 0:
                 loss = (tx - rx) / tx * 100.0
@@ -599,6 +601,8 @@ class OtgTrafficGen(AbstractTrafficGenerator):
                     "name": fm.name,
                     "frames_tx": tx,
                     "frames_rx": rx,
+                    "bytes_tx": tx_bytes,
+                    "bytes_rx": rx_bytes,
                     "loss": loss,
                 }
             )
@@ -617,6 +621,8 @@ class OtgTrafficGen(AbstractTrafficGenerator):
             name = m["name"]
             tx = int(m.get("frames_tx") or 0)
             rx = int(m.get("frames_rx") or 0)
+            tx_bytes = int(m.get("bytes_tx") or 0)
+            rx_bytes = int(m.get("bytes_rx") or 0)
             loss_pct = float(m["loss"]) if m.get("loss") is not None else 0.0
             accumulated = self._flow_loss_accumulated.get(name, 0.0)
             loss_start = self._flow_loss_start.get(name)
@@ -628,6 +634,12 @@ class OtgTrafficGen(AbstractTrafficGenerator):
                     "packet_loss_duration": accumulated * 1000.0,
                     "packet_loss_percentage": loss_pct,
                     "frame_delta": float(tx - rx),
+                    # Match the RESTPy packet-loss statistics contract so
+                    # traffic evidence tasks work with either backend.
+                    "tx_frames": tx,
+                    "rx_frames": rx,
+                    "tx_bytes": tx_bytes,
+                    "rx_bytes": rx_bytes,
                 }
             )
         return stats
@@ -667,6 +679,10 @@ class OtgTrafficGen(AbstractTrafficGenerator):
             self._captured_stats.clear()
         self._flow_loss_start.clear()
         self._flow_loss_accumulated.clear()
+
+    def supports_controller_traffic_stats_reset(self) -> bool:
+        """OTG currently clears local samples, not controller counters."""
+        return False
 
     def check_packet_loss(
         self, max_loss_pct: float = 0.0

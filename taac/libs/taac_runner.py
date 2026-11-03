@@ -1669,6 +1669,7 @@ class TaacRunner:
                             self.logger.error(
                                 f"Failed to run post-snapshot checks for {test_case_name}: {e}"
                             )
+                        _playbook_cleanup_exc: BaseException | None = None
                         if playbook.cleanup_steps:
                             log_subsection(
                                 f"Cleanup Steps — Playbook '{playbook.name}'",
@@ -1679,18 +1680,25 @@ class TaacRunner:
                                 logger=self.logger,
                             )
                             _cleanup_start = time.time()
-                            await self.initialize_and_run_steps(
-                                playbook.cleanup_steps,
-                                test_device=test_device,
-                                test_case_name=test_case_name,
-                                test_case_start_time=test_case_start_time,
-                                test_case_results=test_case_results,
-                            )
-                            log_phase_end(
-                                f"Cleanup Steps ({len(playbook.cleanup_steps)} step(s))",
-                                duration_secs=time.time() - _cleanup_start,
-                                logger=self.logger,
-                            )
+                            try:
+                                await self.initialize_and_run_steps(
+                                    playbook.cleanup_steps,
+                                    test_device=test_device,
+                                    test_case_name=test_case_name,
+                                    test_case_start_time=test_case_start_time,
+                                    test_case_results=test_case_results,
+                                )
+                            except asyncio.CancelledError as error:
+                                _playbook_cleanup_exc = error
+                            except Exception as error:
+                                _playbook_cleanup_exc = error
+                            finally:
+                                log_phase_end(
+                                    "Cleanup Steps "
+                                    f"({len(playbook.cleanup_steps)} step(s))",
+                                    duration_secs=time.time() - _cleanup_start,
+                                    logger=self.logger,
+                                )
                         # Last resort for the CPU/RSS characterization brackets.
                         # Meta-internal: the brackets and their sampler live
                         # under internal/, so there is nothing to reap in OSS.
@@ -1744,9 +1752,11 @@ class TaacRunner:
                         except Exception as e:
                             _teardown_exc = e
 
-                    _cleanup_errors = (
-                        [_teardown_exc] if _teardown_exc is not None else []
-                    )
+                    _cleanup_errors = [
+                        error
+                        for error in (_playbook_cleanup_exc, _teardown_exc)
+                        if error is not None
+                    ]
                     self._raise_test_case_cleanup_errors(_stage_exc, _cleanup_errors)
 
                 self._record_playbook_result(

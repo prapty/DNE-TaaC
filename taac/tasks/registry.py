@@ -184,11 +184,21 @@ from taac.tasks.verify_best_path_changes_task import (
 )
 
 # RBB SRv6 qualification tasks (see taac/testconfigs/routing/qual_rbb.py).
+from taac.tasks.rbb_best_effort_cleanup_task import (
+    RbbBestEffortCleanupTask,
+)
 from taac.tasks.rbb_dut_bootstrap_task import (
     RbbDutBootstrapTask,
 )
 from taac.tasks.rbb_edge_ebgp_task import (
     RbbEdgeEbgpTask,
+)
+from taac.tasks.rbb_ixia_bgp_learned_routes_task import (
+    RbbIxiaBgpLearnedRoutesTask,
+)
+from taac.tasks.rbb_ixia_capability_task import RbbIxiaCapabilityTask
+from taac.tasks.rbb_split_agent_recovery_task import (
+    RbbSplitAgentRecoveryTask,
 )
 from taac.tasks.rbb_srv6_counter_delta_task import (
     RbbSrv6CounterDeltaTask,
@@ -201,6 +211,9 @@ from taac.tasks.rbb_srv6_verify_task import (
 )
 from taac.tasks.rbb_state_audit_task import (
     RbbStateAuditTask,
+)
+from taac.tasks.rbb_traffic_counter_correlation_task import (
+    RbbTrafficCounterCorrelationTask,
 )
 
 TASK_REGISTRY: t.List[t.Type[BaseTask]] = [
@@ -256,12 +269,17 @@ TASK_REGISTRY: t.List[t.Type[BaseTask]] = [
     VerifyBestPathChangesTask,
     SetPortChannelMinLinkPatcherTask,
     SetupBaseConfigsTask,
+    RbbBestEffortCleanupTask,
     RbbDutBootstrapTask,
     RbbEdgeEbgpTask,
+    RbbIxiaBgpLearnedRoutesTask,
+    RbbIxiaCapabilityTask,
     RbbSrv6CounterDeltaTask,
     RbbSrv6DirectRouteTask,
     RbbSrv6VerifyTask,
+    RbbSplitAgentRecoveryTask,
     RbbStateAuditTask,
+    RbbTrafficCounterCorrelationTask,
 ]
 
 # Add internal tasks only when not in OSS mode
