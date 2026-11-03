@@ -371,15 +371,25 @@ class TestEnableTraffic(unittest.TestCase):
         )
 
     def test_enable_by_regex_partial_match(self):
+        # Selection must be correct even on the first test case, when no
+        # previous lifecycle call has populated the disabled-flow set.
+        self.tgen._disabled_flows = set()
+        self.tgen._enable_traffic(regexes=["p1"], enable=True)
+        self.assertEqual(
+            self.tgen._disabled_flows,
+            {"routed_flow_p2_0_to_0", "bgp_flow_1"},
+        )
+
+    def test_enable_by_regex_replaces_previous_selection(self):
         self.tgen._disabled_flows = {
             "routed_flow_p1_0_to_0",
             "routed_flow_p2_0_to_0",
             "bgp_flow_1",
         }
-        self.tgen._enable_traffic(regexes=["p1"], enable=True)
+        self.tgen._enable_traffic(regexes=["bgp_flow"], enable=True)
         self.assertEqual(
             self.tgen._disabled_flows,
-            {"routed_flow_p2_0_to_0", "bgp_flow_1"},
+            {"routed_flow_p1_0_to_0", "routed_flow_p2_0_to_0"},
         )
 
     def test_no_match_is_noop(self):
@@ -441,6 +451,17 @@ class TestBeginEndTestCase(unittest.TestCase):
         self.tgen.end_test_case(traffic_regexes=None)
         self.assertTrue(self.tgen.paused)
         self.assertEqual(self.tgen._disabled_flows, {"flow1"})
+
+    def test_first_begin_enables_only_matching_flow(self):
+        flow2 = MagicMock()
+        flow2.name = "flow2"
+        flow3 = MagicMock()
+        flow3.name = "flow3"
+        self.tgen.config.flows.extend([flow2, flow3])
+
+        self.tgen.begin_test_case("uuid-selected", traffic_regexes=["^flow2$"])
+
+        self.assertEqual(self.tgen._disabled_flows, {"flow1", "flow3"})
 
 
 # -- find_bgp_peers: pure list filtering --------------------------------------
@@ -1093,9 +1114,7 @@ class TestBgpConfigBuilders(unittest.TestCase):
             device_group_index=1,
         )
 
-        self.assertEqual(
-            tgen._bgp_route_names[("p2", 1, 4, "v6")], "tail_v6_pool"
-        )
+        self.assertEqual(tgen._bgp_route_names[("p2", 1, 4, "v6")], "tail_v6_pool")
 
     def test_bgp_prefix_with_communities(self):
         tgen = _create_otg_tgen()

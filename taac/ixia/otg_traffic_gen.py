@@ -82,9 +82,7 @@ class OtgTrafficGen(AbstractTrafficGenerator):
         # Built during _build_config
         self._bgp_peer_names: t.List[str] = []
         self._device_group_info: t.Dict[t.Tuple[str, int], t.Dict[str, t.Any]] = {}
-        self._bgp_route_names: t.Dict[
-            t.Tuple[str, int, int, str], str
-        ] = {}
+        self._bgp_route_names: t.Dict[t.Tuple[str, int, int, str], str] = {}
 
         # TaacRunner-facing state
         self.test_case_uuid: t.Optional[str] = None
@@ -301,7 +299,13 @@ class OtgTrafficGen(AbstractTrafficGenerator):
                         matched.add(flow.name)
                         break
             if enable:
-                self._disabled_flows -= matched
+                # ``begin_test_case`` promises that only the selected flows
+                # are active.  Build the disabled set from the complete flow
+                # inventory instead of relying on a previous test case to
+                # have disabled non-matches first.
+                self._disabled_flows = {
+                    flow.name for flow in self.config.flows if flow.name not in matched
+                }
             else:
                 self._disabled_flows |= matched
 
@@ -1120,9 +1124,7 @@ class OtgTrafficGen(AbstractTrafficGenerator):
                 self.logger.info(f"[OTG]   Flow {flow_name}: {tx} -> {rx}")
 
     def _resolve_endpoint(self, ep, traffic_type=None) -> str:
-        endpoint_type = getattr(
-            ep, "endpoint_type", ixia_types.EndpointType.IXIA_PORT
-        )
+        endpoint_type = getattr(ep, "endpoint_type", ixia_types.EndpointType.IXIA_PORT)
         network_group_index = getattr(ep, "network_group_index", None)
         is_bgp_prefix = (
             endpoint_type == ixia_types.EndpointType.BGP_PREFIX
