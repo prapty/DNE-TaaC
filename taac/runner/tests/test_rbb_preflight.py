@@ -410,6 +410,30 @@ class TestRbbPreflight(TestCase):
             result.stderr,
         )
 
+    def test_dual_stack_suite_accepts_allowlisted_ipv4_defaults(self) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_dual_stack_suite_rejects_aggregate_rate_above_port_capacity(
+        self,
+    ) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+            environment={"TAAC_RBB_TRAFFIC_LINE_RATE": "51"},
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("2 * TAAC_RBB_TRAFFIC_LINE_RATE <= 100", result.stderr)
+
     def test_core_ecmp_suite_accepts_two_paths_and_safe_defaults(self) -> None:
         self._write_valid_config()
         self._add_second_core_path()
@@ -446,6 +470,121 @@ class TestRbbPreflight(TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("must not exceed 100", result.stderr)
+
+    def test_dual_stack_suite_rejects_overlapping_ipv4_pools(self) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+            environment={
+                "TAAC_RBB_IXIA_HEAD_PREFIX_V4": "10.100.75.128",
+                "TAAC_RBB_IXIA_TAIL_PREFIX_V4": "10.100.75.128",
+            },
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("IPv4 advertised pools must not overlap", result.stderr)
+
+    def test_dual_stack_suite_rejects_invalid_ipv4_edge_pair(self) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+            environment={
+                "TAAC_RBB_IXIA_R1_EDGE_V4": "10.100.75.2",
+                "TAAC_RBB_IXIA_R1_EDGE_GW_V4": "10.100.75.5",
+            },
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("distinct addresses in one subnet", result.stderr)
+
+    def test_dual_stack_suite_rejects_ipv4_pool_on_edge_subnet(self) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+            environment={"TAAC_RBB_IXIA_HEAD_PREFIX_V4": "10.100.75.2"},
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must not overlap the R1 edge subnet", result.stderr)
+
+    def test_dual_stack_suite_rejects_nonallowlisted_ipv4_pool(self) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+            environment={"TAAC_RBB_IXIA_HEAD_PREFIX_V4": "203.0.113.128"},
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside TAAC's IXIA advertisement allowlist", result.stderr)
+
+    def test_dual_stack_suite_allows_explicit_ipv4_allowlist_opt_out(self) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+            environment={
+                "TAAC_RBB_IXIA_HEAD_PREFIX_V4": "203.0.113.128",
+                "TAAC_RBB_SKIP_ADVERTISED_PREFIXES_CHECK": "1",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_dual_stack_suite_rejects_ipv4_pool_crossing_allowlist_boundary(
+        self,
+    ) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+            environment={
+                "TAAC_RBB_IXIA_HEAD_PREFIX_V4": "10.100.75.255",
+                "TAAC_RBB_IXIA_HEAD_PREFIX_COUNT_V4": "2",
+            },
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("outside TAAC's IXIA advertisement allowlist", result.stderr)
+
+    def test_dual_stack_suite_rejects_non_ipv4_edge_address(self) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+            environment={
+                "TAAC_RBB_IXIA_R1_EDGE_V4": "2001:db8:1::2",
+                "TAAC_RBB_IXIA_R1_EDGE_GW_V4": "2001:db8:1::1",
+            },
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("IPv4 edge must use IPv4", result.stderr)
+
+    def test_dual_stack_suite_rejects_ipv6_pool_on_edge_subnet(self) -> None:
+        self._write_valid_config()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="dual-stack-traffic",
+            environment={"TAAC_RBB_IXIA_HEAD_PREFIX": "2001:db8:a:3::"},
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "IPv6 advertised pool must not overlap the R1 edge subnet",
+            result.stderr,
+        )
 
     def test_check_accepts_environment_without_rbb_env(self) -> None:
         self._write_valid_config()
@@ -569,6 +708,12 @@ class TestRbbPreflight(TestCase):
                 "",
             ),
             (
+                "dual-stack-traffic",
+                ["--with-traffic"],
+                "/workspace/examples/rbb_dual_stack_traffic_config.py",
+                "",
+            ),
+            (
                 "tail-decap",
                 ["--with-traffic"],
                 "/workspace/examples/rbb_srv6_tail_decap_config.py",
@@ -611,6 +756,10 @@ class TestRbbPreflight(TestCase):
             ),
             (
                 ["--suite", "core-ecmp"],
+                "requires --with-traffic",
+            ),
+            (
+                ["--suite", "dual-stack-traffic"],
                 "requires --with-traffic",
             ),
             (

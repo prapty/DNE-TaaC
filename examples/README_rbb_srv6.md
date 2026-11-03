@@ -242,11 +242,12 @@ Validate all local inputs before contacting the lab:
 This checks the secrets schema and permissions, required settings, DUT rows,
 CSV shape, topology relationships, placeholder endpoints, and—when
 `--with-traffic` is present—the IXIA credentials, controller/chassis, ports,
-and advertised-prefix contract. For `--suite traffic-foundation` and
-`core-ecmp`, it also validates the optional bandwidth, line-rate, frame-size,
-timing, and tolerance settings. `core-ecmp` adds the Open/R metric and minimum
-per-path-share contract. For `--suite resilience`, preflight validates the
-optional core-index,
+and advertised-prefix contract. For `--suite traffic-foundation`,
+`core-ecmp`, and `dual-stack-traffic`, it also validates the optional
+bandwidth, line-rate, frame-size, timing, and tolerance settings. `core-ecmp`
+adds the Open/R metric and minimum per-path-share contract;
+`dual-stack-traffic` adds the IPv4 edge and advertised-pool contract. For
+`--suite resilience`, preflight validates the optional core-index,
 selected-path-share, and maximum-loss numeric ranges.
 It runs inside the already-built TAAC image but does not contact a DUT or
 reserve IXIA. The same preflight runs automatically inside the single container
@@ -390,7 +391,11 @@ If an isolated lab uses an explicitly owned prefix outside that allowlist, set
 only to the RBB TestConfig; preflight and the factory still restrict IXIA to
 the single exact IPv6 prefix above for the base, tail-decap, and resilience
 suites. The traffic-foundation and core-ECMP suites instead validate their
-explicitly declared, non-overlapping IPv6 head and tail prefix ranges.
+explicitly declared, non-overlapping IPv6 head and tail prefix ranges. The
+dual-stack suite validates those ranges plus independent, non-overlapping IPv4
+pools. Its IPv4 defaults are inside TAAC's existing 10.100.75.0/24 IXIA
+advertisement allowlist; a different owned lab range requires the same explicit
+opt-out above.
 
 ### Select a test suite
 
@@ -405,6 +410,7 @@ with `--suite`:
 | `state-audit` | Default full read-only common audits: OpenR route ownership/reachability and per-core NDP resolution | None |
 | `traffic-foundation` | Phase 1 TC-05/06/07/13/14/17: bidirectional route propagation, throughput/loss, and IXIA-to-DUT counter correlation | Required |
 | `core-ecmp` | Phase 1 adapted TC-02 and full TC-03/08: reversible Open/R path selection, equal-cost RIB/FIB, and traffic on every declared core path | Required; RESTPy/TaacIxia for TC-08 |
+| `dual-stack-traffic` | Phase 1 TC-11/12 and partial TC-15: IPv4 forwarding plus concurrent bidirectional IPv4/IPv6 throughput and loss | Required |
 | `tail-decap` | Phase 2 TC-24: final-uSID decapsulation and inner-table lookup | Required |
 | `resilience` | Phase 2 TC-15/104, partial TC-30, and adapted TC-99: warmboot, bgpd restart, and edge outage | Required; RESTPy/TaacIxia only |
 
@@ -442,6 +448,14 @@ identity, health, and absence of overrides while allowing dynamic RTT metrics
 to reconverge. TC-02 is labeled adapted because the source requirement
 names a three-role topology while this setup has two DUTs.
 
+The dual-stack suite creates separate IPv6 and IPv4 IXIA device groups and
+peers on each selected edge. With `--setup-dut-edges`, TAAC validates and
+applies both RIF addresses as one guarded overlay and restores the original
+full files during teardown. TC-11 and TC-12 isolate forward and reverse IPv4;
+TC-15 starts all four IPv4/IPv6 directions in one measurement window. TC-15 is
+labeled partial because the original latency target has no backend-neutral
+TAAC threshold/API; route ownership, throughput, and loss remain enforced.
+
 Examples for an already configured lab:
 
 ```bash
@@ -451,6 +465,7 @@ Examples for an already configured lab:
 # Traffic-backed functional suites.
 ./scripts/run-rbb-srv6.sh --suite traffic-foundation --with-traffic
 ./scripts/run-rbb-srv6.sh --suite core-ecmp --with-traffic
+./scripts/run-rbb-srv6.sh --suite dual-stack-traffic --with-traffic
 ./scripts/run-rbb-srv6.sh --suite tail-decap --with-traffic
 ./scripts/run-rbb-srv6.sh --suite resilience --with-traffic
 ```

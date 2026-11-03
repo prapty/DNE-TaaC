@@ -20,6 +20,7 @@ import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
+from taac.ixia.ixnetwork_restpy_constants import ALLOWED_IPV4_ADVERTISEMENTS
 from taac.runner.oss_exceptions import OSSConfigError
 from taac.runner.oss_secrets import get_oss_dut_credentials, load_oss_secrets
 from taac.testconfigs.routing.util.bgp_rbb_limits import (
@@ -214,6 +215,7 @@ _RBB_SUITES = frozenset(
         "state-audit",
         "traffic-foundation",
         "core-ecmp",
+        "dual-stack-traffic",
         "tail-decap",
         "resilience",
     )
@@ -312,6 +314,24 @@ def _validate_traffic_foundation_inputs() -> None:
         raise OSSConfigError(f"{name} must be finite and in [0, 100]")
 
 
+def _validate_dual_stack_inputs() -> None:
+    """Validate the optional IPv4 companion knobs before factory import."""
+    for name, minimum, maximum in (
+        ("TAAC_RBB_IXIA_EDGE_PREFIX_MASK_V4", 1, 32),
+        ("TAAC_RBB_IXIA_HEAD_PREFIX_LEN_V4", 1, 32),
+        ("TAAC_RBB_IXIA_TAIL_PREFIX_LEN_V4", 1, 32),
+        ("TAAC_RBB_IXIA_HEAD_PREFIX_COUNT_V4", 1, MAX_RBB_ADVERTISED_PREFIX_COUNT),
+        ("TAAC_RBB_IXIA_TAIL_PREFIX_COUNT_V4", 1, MAX_RBB_ADVERTISED_PREFIX_COUNT),
+    ):
+        _validate_optional_integer(name, minimum=minimum, maximum=maximum)
+    line_rate = int(os.environ.get("TAAC_RBB_TRAFFIC_LINE_RATE", "10"))
+    if 2 * line_rate > 100:
+        raise OSSConfigError(
+            "dual-stack TC-15 requires 2 * TAAC_RBB_TRAFFIC_LINE_RATE <= 100 "
+            "on each IXIA source port"
+        )
+
+
 def _validate_core_ecmp_inputs() -> None:
     """Validate Open/R metric and per-path traffic evidence knobs."""
     maximum = (1 << 31) - 1
@@ -343,6 +363,183 @@ def _validate_core_ecmp_inputs() -> None:
         raise OSSConfigError(f"{name} must be finite and in (0, 100]") from exc
     if not math.isfinite(share) or not 0 < share <= 100:
         raise OSSConfigError(f"{name} must be finite and in (0, 100]")
+
+
+def _advertised_ipv4_range(
+    *, start: str, prefix_length: str, prefix_count: str, label: str
+) -> tuple[ipaddress.IPv4Network, int, int]:
+    try:
+        advertised_start = ipaddress.ip_address(start)
+        length = int(prefix_length)
+        count = int(prefix_count)
+        advertised = ipaddress.ip_network(f"{advertised_start}/{length}", strict=False)
+    except ValueError as exc:
+        raise OSSConfigError(
+            f"The IXIA {label} IPv4-prefix contract is invalid"
+        ) from exc
+    if not isinstance(advertised, ipaddress.IPv4Network):
+        raise OSSConfigError(f"The IXIA {label} IPv4-prefix contract must use IPv4")
+    if not 1 <= count <= MAX_RBB_ADVERTISED_PREFIX_COUNT:
+        raise OSSConfigError(
+            f"The IXIA {label} IPv4-prefix count must be in 1.."
+            f"{MAX_RBB_ADVERTISED_PREFIX_COUNT}"
+        )
+    if advertised_start != advertised.network_address:
+        raise OSSConfigError(
+            f"TAAC_RBB_IXIA_{label.upper()}_PREFIX_V4 must be the network address"
+        )
+    last_address = (
+        int(advertised.network_address) + count * advertised.num_addresses - 1
+    )
+    if last_address > (1 << 32) - 1:
+        raise OSSConfigError(f"The IXIA {label} IPv4-prefix range exceeds IPv4 space")
+    return advertised, count, last_address
+
+
+def _validate_dual_stack_contract(
+    *,
+    head_v6: ipaddress.IPv6Network,
+    head_v6_last: int,
+    tail_v6: ipaddress.IPv6Network,
+    tail_v6_last: int,
+) -> None:
+    head, _, head_last = _advertised_ipv4_range(
+        start=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX_V4", "10.100.75.128"),
+        prefix_length=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX_LEN_V4", "32"),
+        prefix_count=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX_COUNT_V4", "1"),
+        label="head",
+    )
+    tail, _, tail_last = _advertised_ipv4_range(
+        start=os.environ.get("TAAC_RBB_IXIA_TAIL_PREFIX_V4", "10.100.75.192"),
+        prefix_length=os.environ.get("TAAC_RBB_IXIA_TAIL_PREFIX_LEN_V4", "32"),
+        prefix_count=os.environ.get("TAAC_RBB_IXIA_TAIL_PREFIX_COUNT_V4", "1"),
+        label="tail",
+    )
+    if (
+        int(head.network_address) <= tail_last
+        and int(tail.network_address) <= head_last
+    ):
+        raise OSSConfigError(
+            "IXIA head and tail IPv4 advertised pools must not overlap"
+        )
+    skip_allowlist = os.environ.get(
+        "TAAC_RBB_SKIP_ADVERTISED_PREFIXES_CHECK", ""
+    ).lower() in ("1", "true", "yes")
+    if not skip_allowlist:
+        for label, pool, pool_last in (
+            ("head", head, head_last),
+            ("tail", tail, tail_last),
+        ):
+            last = ipaddress.IPv4Address(pool_last)
+            if not any(
+                pool.network_address in allowed and last in allowed
+                for allowed in ALLOWED_IPV4_ADVERTISEMENTS
+            ):
+                raise OSSConfigError(
+                    f"IXIA {label} IPv4 advertised pool is outside TAAC's "
+                    "IXIA advertisement allowlist; use an allowlisted range "
+                    "or explicitly set "
+                    "TAAC_RBB_SKIP_ADVERTISED_PREFIXES_CHECK=1 for an owned "
+                    "isolated-lab prefix"
+                )
+
+    try:
+        mask = int(os.environ.get("TAAC_RBB_IXIA_EDGE_PREFIX_MASK_V4", "30"))
+    except ValueError as exc:
+        raise OSSConfigError(
+            "TAAC_RBB_IXIA_EDGE_PREFIX_MASK_V4 must be an integer"
+        ) from exc
+    if not 1 <= mask <= 32:
+        raise OSSConfigError("TAAC_RBB_IXIA_EDGE_PREFIX_MASK_V4 must be in 1..32")
+    defaults = {
+        "r1": ("10.100.75.2", "10.100.75.1"),
+        "r2": ("10.100.75.6", "10.100.75.5"),
+    }
+    edge_networks: list[tuple[str, ipaddress.IPv4Network]] = []
+    for role, (default_peer, default_gateway) in defaults.items():
+        upper = role.upper()
+        try:
+            peer = ipaddress.ip_interface(
+                f"{os.environ.get(f'TAAC_RBB_IXIA_{upper}_EDGE_V4', default_peer)}/{mask}"
+            )
+            gateway = ipaddress.ip_interface(
+                f"{os.environ.get(f'TAAC_RBB_IXIA_{upper}_EDGE_GW_V4', default_gateway)}/{mask}"
+            )
+        except ValueError as exc:
+            raise OSSConfigError(
+                f"The IXIA {upper} IPv4 edge contract is invalid"
+            ) from exc
+        if not isinstance(peer, ipaddress.IPv4Interface) or not isinstance(
+            gateway, ipaddress.IPv4Interface
+        ):
+            raise OSSConfigError(f"The IXIA {upper} IPv4 edge must use IPv4")
+        if peer.network != gateway.network or peer.ip == gateway.ip:
+            raise OSSConfigError(
+                f"IXIA {upper} IPv4 peer and gateway must be distinct addresses "
+                "in one subnet"
+            )
+        edge_networks.append((upper, peer.network))
+    for label, pool, pool_last in (
+        ("head", head, head_last),
+        ("tail", tail, tail_last),
+    ):
+        for role, edge_network in edge_networks:
+            if (
+                int(pool.network_address) <= int(edge_network.broadcast_address)
+                and int(edge_network.network_address) <= pool_last
+            ):
+                raise OSSConfigError(
+                    f"IXIA {label} IPv4 advertised pool must not overlap the "
+                    f"{role} edge subnet"
+                )
+
+    try:
+        mask6 = int(os.environ.get("TAAC_RBB_IXIA_EDGE_MASK", "64"))
+    except ValueError as exc:
+        raise OSSConfigError("TAAC_RBB_IXIA_EDGE_MASK must be an integer") from exc
+    if not 1 <= mask6 <= 128:
+        raise OSSConfigError("TAAC_RBB_IXIA_EDGE_MASK must be in 1..128")
+    defaults6 = {
+        "r1": ("2001:db8:a:3::2", "2001:db8:a:3::1"),
+        "r2": ("2001:db8:a:10::2", "2001:db8:a:10::1"),
+    }
+    edge_networks6: list[tuple[str, ipaddress.IPv6Network]] = []
+    for role, (default_peer, default_gateway) in defaults6.items():
+        upper = role.upper()
+        try:
+            peer = ipaddress.ip_interface(
+                f"{os.environ.get(f'TAAC_RBB_IXIA_{upper}_EDGE_V6', default_peer)}/{mask6}"
+            )
+            gateway = ipaddress.ip_interface(
+                f"{os.environ.get(f'TAAC_RBB_IXIA_{upper}_EDGE_GW_V6', default_gateway)}/{mask6}"
+            )
+        except ValueError as exc:
+            raise OSSConfigError(
+                f"The IXIA {upper} IPv6 edge contract is invalid"
+            ) from exc
+        if not isinstance(peer, ipaddress.IPv6Interface) or not isinstance(
+            gateway, ipaddress.IPv6Interface
+        ):
+            raise OSSConfigError(f"The IXIA {upper} IPv6 edge must use IPv6")
+        if peer.network != gateway.network or peer.ip == gateway.ip:
+            raise OSSConfigError(
+                f"IXIA {upper} IPv6 peer and gateway must be distinct addresses "
+                "in one subnet"
+            )
+        edge_networks6.append((upper, peer.network))
+    for label, pool, pool_last in (
+        ("head", head_v6, head_v6_last),
+        ("tail", tail_v6, tail_v6_last),
+    ):
+        for role, edge_network in edge_networks6:
+            if (
+                int(pool.network_address) <= int(edge_network.broadcast_address)
+                and int(edge_network.network_address) <= pool_last
+            ):
+                raise OSSConfigError(
+                    f"IXIA {label} IPv6 advertised pool must not overlap the "
+                    f"{role} edge subnet"
+                )
 
 
 def _advertised_ipv6_range(
@@ -398,7 +595,7 @@ def _validate_traffic_contract(suite: str) -> None:
     if steered.version != 6:
         raise OSSConfigError("The IXIA tail-prefix contract must use IPv6")
 
-    if suite in ("traffic-foundation", "core-ecmp"):
+    if suite in ("traffic-foundation", "core-ecmp", "dual-stack-traffic"):
         head, _, head_last = _advertised_ipv6_range(
             start=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX", "2001:db8:feed::"),
             prefix_length=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX_LEN", "64"),
@@ -409,6 +606,13 @@ def _validate_traffic_contract(suite: str) -> None:
         head_start = int(head.network_address)
         if tail_start <= head_last and head_start <= tail_last:
             raise OSSConfigError("IXIA head and tail advertised pools must not overlap")
+        if suite == "dual-stack-traffic":
+            _validate_dual_stack_contract(
+                head_v6=head,
+                head_v6_last=head_last,
+                tail_v6=advertised,
+                tail_v6_last=tail_last,
+            )
         return
 
     if advertised != steered or count != 1:
@@ -447,10 +651,12 @@ def run_preflight(
 
     if suite == "resilience":
         _validate_resilience_inputs()
-    elif suite in ("traffic-foundation", "core-ecmp"):
+    elif suite in ("traffic-foundation", "core-ecmp", "dual-stack-traffic"):
         _validate_traffic_foundation_inputs()
         if suite == "core-ecmp":
             _validate_core_ecmp_inputs()
+        elif suite == "dual-stack-traffic":
+            _validate_dual_stack_inputs()
 
     # Both local files are convenience inputs, not required interfaces. This
     # keeps the wrapper usable in CI and in organizations that inject settings
