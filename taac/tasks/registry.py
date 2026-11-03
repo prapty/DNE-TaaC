@@ -199,6 +199,9 @@ from taac.tasks.rbb_srv6_direct_route_task import (
 from taac.tasks.rbb_srv6_verify_task import (
     RbbSrv6VerifyTask,
 )
+from taac.tasks.rbb_state_audit_task import (
+    RbbStateAuditTask,
+)
 
 TASK_REGISTRY: t.List[t.Type[BaseTask]] = [
     AristaDaemonControlTask,
@@ -258,6 +261,7 @@ TASK_REGISTRY: t.List[t.Type[BaseTask]] = [
     RbbSrv6CounterDeltaTask,
     RbbSrv6DirectRouteTask,
     RbbSrv6VerifyTask,
+    RbbStateAuditTask,
 ]
 
 # Add internal tasks only when not in OSS mode
