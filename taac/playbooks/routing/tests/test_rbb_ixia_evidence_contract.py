@@ -184,6 +184,30 @@ class RbbIxiaCapabilityTaskTest(unittest.IsolatedAsyncioTestCase):
                         }
                     )
 
+    async def test_variable_l4_range_capability_is_explicit(self) -> None:
+        supported = SimpleNamespace(supports_variable_l4_flow_ranges=lambda: True)
+        await RbbIxiaCapabilityTask(ixia=supported, logger=mock.MagicMock()).run(
+            {
+                "gate": "phase1:TC-08",
+                "require_variable_l4_flow_ranges": True,
+            }
+        )
+
+        for ixia in (
+            SimpleNamespace(),
+            SimpleNamespace(supports_variable_l4_flow_ranges=lambda: False),
+        ):
+            with self.subTest(ixia=ixia):
+                with self.assertRaisesRegex(
+                    TestCaseFailure, "core ECMP distribution evidence"
+                ):
+                    await RbbIxiaCapabilityTask(ixia=ixia, logger=mock.MagicMock()).run(
+                        {
+                            "gate": "phase1:TC-08",
+                            "require_variable_l4_flow_ranges": True,
+                        }
+                    )
+
     async def test_capability_task_is_registered(self) -> None:
         from taac.tasks.registry import TASK_NAME_TO_CLASS
 

@@ -227,6 +227,10 @@ class TaacIxia(Ixia, Thread, AbstractTrafficGenerator):
         """IxNetwork clears the underlying cumulative traffic counters."""
         return True
 
+    def supports_variable_l4_flow_ranges(self) -> bool:
+        """RESTPy renders the configured L4 start/step/count value lists."""
+        return True
+
     @retryable(sleep_time=2, num_tries=100, print_ex=True)
     def start_capturing(self, sample_time: int):
         """

@@ -119,6 +119,16 @@ class AbstractTrafficGenerator(ABC):
         """
         return False
 
+    def supports_variable_l4_flow_ranges(self) -> bool:
+        """Whether declarative L4 start/step/count ranges reach the wire.
+
+        ECMP-distribution tests use those ranges to create many distinct
+        five-tuples from one traffic item. A backend that renders only one
+        scalar port must return ``False`` so the test fails before changing
+        DUT path metrics instead of misdiagnosing a healthy ECMP group.
+        """
+        return False
+
     @abstractmethod
     def get_traffic_start_time(self) -> float:
         """

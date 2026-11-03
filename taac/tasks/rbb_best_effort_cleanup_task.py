@@ -23,6 +23,7 @@ from taac.constants import TestCaseFailure
 from taac.driver.driver_constants import FbossSystemctlServiceName
 from taac.tasks.base_task import BaseTask
 from taac.tasks.rbb_input_validation import validated_fboss_interface_names
+from taac.tasks.rbb_openr_core_path_task import RbbOpenrCorePathTask
 from taac.tasks.rbb_split_agent_recovery_task import RbbSplitAgentRecoveryTask
 from taac.tasks.rbb_srv6_direct_route_task import RbbSrv6DirectRouteTask
 from taac.utils.driver_factory import async_get_device_driver
@@ -37,6 +38,7 @@ _RECOVER_SPLIT_AGENT = "recover_split_agent"
 _ENABLE_INTERFACES = "enable_interfaces"
 _DELETE_DIRECT_ROUTE = "delete_direct_route"
 _STOP_TRAFFIC = "stop_traffic"
+_RESTORE_OPENR_CORE_PATH = "restore_openr_core_path"
 
 _SUPPORTED_OPERATIONS = frozenset(
     {
@@ -45,6 +47,7 @@ _SUPPORTED_OPERATIONS = frozenset(
         _ENABLE_INTERFACES,
         _DELETE_DIRECT_ROUTE,
         _STOP_TRAFFIC,
+        _RESTORE_OPENR_CORE_PATH,
     }
 )
 
@@ -116,6 +119,12 @@ class RbbBestEffortCleanupTask(BaseTask):
 
         if operation_type == _STOP_TRAFFIC:
             allowed = {"type", "marker"}
+        elif operation_type == _RESTORE_OPENR_CORE_PATH:
+            _required_string(operation.get("hostname"), "hostname")
+            _required_string(operation.get("sample_id"), "sample_id")
+            if "gate" in operation:
+                _required_string(operation.get("gate"), "gate")
+            allowed = {"type", "marker", "hostname", "sample_id", "gate"}
         elif operation_type == _START_SERVICE:
             _required_string(operation.get("hostname"), "hostname")
             service = _required_string(operation.get("service"), "service")
@@ -166,6 +175,23 @@ class RbbBestEffortCleanupTask(BaseTask):
         operation_type = operation["type"]
         if operation_type == _STOP_TRAFFIC:
             self.ixia.stop_traffic()
+            return
+
+        if operation_type == _RESTORE_OPENR_CORE_PATH:
+            task = RbbOpenrCorePathTask(
+                hostname=operation["hostname"],
+                ixia=self._ixia,
+                logger=self.logger,
+                shared_data=self._shared_data,
+            )
+            await task.run(
+                {
+                    "action": "restore",
+                    "hostname": operation["hostname"],
+                    "sample_id": operation["sample_id"],
+                    "gate": operation.get("gate", "rbb_openr_core_path_cleanup"),
+                }
+            )
             return
 
         hostname = operation["hostname"]

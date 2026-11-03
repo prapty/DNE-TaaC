@@ -12,6 +12,7 @@ from taac.tasks.rbb_best_effort_cleanup_task import RbbBestEffortCleanupTask
 
 _DRIVER_PATH = "taac.tasks.rbb_best_effort_cleanup_task.async_get_device_driver"
 _ROUTE_RUN_PATH = "taac.tasks.rbb_best_effort_cleanup_task.RbbSrv6DirectRouteTask.run"
+_OPENR_RESTORE_PATH = "taac.tasks.rbb_best_effort_cleanup_task.RbbOpenrCorePathTask.run"
 
 
 class RbbBestEffortCleanupTaskTest(unittest.IsolatedAsyncioTestCase):
@@ -200,6 +201,39 @@ class RbbBestEffortCleanupTaskTest(unittest.IsolatedAsyncioTestCase):
 
         route_delete.assert_awaited_once()
         ixia.stop_traffic.assert_called_once_with()
+
+    async def test_openr_restore_failure_does_not_skip_peer_restore(self) -> None:
+        task = RbbBestEffortCleanupTask(logger=MagicMock(), shared_data={})
+        operations = [
+            {
+                "type": "restore_openr_core_path",
+                "hostname": "r1.example",
+                "sample_id": "tc08:r1",
+                "gate": "phase1:TC-08_cleanup",
+            },
+            {
+                "type": "restore_openr_core_path",
+                "hostname": "r2.example",
+                "sample_id": "tc08:r2",
+            },
+        ]
+
+        with (
+            patch(
+                _OPENR_RESTORE_PATH,
+                new_callable=AsyncMock,
+                side_effect=(RuntimeError("R1 restore failed"), None),
+            ) as restore,
+            self.assertRaisesRegex(TestCaseFailure, "R1 restore failed"),
+        ):
+            await task.run({"action": "cleanup", "operations": operations})
+
+        self.assertEqual(restore.await_count, 2)
+        first, second = [call.args[0] for call in restore.await_args_list]
+        self.assertEqual(first["hostname"], "r1.example")
+        self.assertEqual(first["gate"], "phase1:TC-08_cleanup")
+        self.assertEqual(second["hostname"], "r2.example")
+        self.assertEqual(second["gate"], "rbb_openr_core_path_cleanup")
 
     async def test_disarmed_marker_preserves_recovered_state(self) -> None:
         shared_data = {}
