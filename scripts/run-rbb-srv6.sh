@@ -38,7 +38,7 @@ Usage: ./scripts/run-rbb-srv6.sh [OPTIONS] [-- RUNNER_ARGS...]
   --config-dir PATH   Use PATH instead of the checkout-local .taac directory.
   --image IMAGE       Use IMAGE instead of the Docker helper's default tag.
   --suite NAME        Select base (default), state-audit, traffic-foundation,
-                      tail-decap, or resilience.
+                      core-ecmp, tail-decap, or resilience.
   --setup-duts        Temporarily bootstrap core ports, OpenR, iBGP, and SRv6.
   --with-traffic      Run the complete SRv6 qualification with live IXIA traffic.
   --setup-dut-edges
@@ -52,6 +52,7 @@ Examples:
   ./scripts/run-rbb-srv6.sh --with-traffic
   ./scripts/run-rbb-srv6.sh --suite state-audit
   ./scripts/run-rbb-srv6.sh --suite traffic-foundation --with-traffic
+  ./scripts/run-rbb-srv6.sh --suite core-ecmp --with-traffic
   ./scripts/run-rbb-srv6.sh --suite tail-decap --with-traffic
   ./scripts/run-rbb-srv6.sh --suite resilience --with-traffic
   ./scripts/run-rbb-srv6.sh --image localhost/fboss-taac:latest --check
@@ -151,6 +152,11 @@ case "$SUITE" in
         PLAYBOOK=""
         SUITE_REQUIRES_TRAFFIC=1
         ;;
+    core-ecmp)
+        TEST_CONFIG="/workspace/examples/rbb_core_ecmp_config.py"
+        PLAYBOOK=""
+        SUITE_REQUIRES_TRAFFIC=1
+        ;;
     tail-decap)
         TEST_CONFIG="/workspace/examples/rbb_srv6_tail_decap_config.py"
         PLAYBOOK=""
@@ -163,7 +169,8 @@ case "$SUITE" in
         ;;
     *)
         echo "Error: unknown suite '$SUITE'" >&2
-        echo "Choose base, state-audit, traffic-foundation, tail-decap, or resilience." >&2
+        echo "Choose base, state-audit, traffic-foundation, core-ecmp," >&2
+        echo "tail-decap, or resilience." >&2
         exit 2
         ;;
 esac

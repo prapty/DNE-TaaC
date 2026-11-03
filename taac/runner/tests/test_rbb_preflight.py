@@ -132,6 +132,15 @@ class TestRbbPreflight(TestCase):
         secrets_path.write_text(json.dumps(secrets), encoding="utf-8")
         secrets_path.chmod(0o600)
 
+    def _add_second_core_path(self) -> None:
+        circuit_path = self.config_dir / "circuit_info.csv"
+        circuit_path.write_text(
+            circuit_path.read_text(encoding="utf-8")
+            + "rbb-r1.lab.local,eth1/3,FBOSS,port-channel2,"
+            "rbb-r2.lab.local,eth1/3,FBOSS,port-channel2,3,\n",
+            encoding="utf-8",
+        )
+
     def _run_wrapper_with_fake_docker(
         self, arguments: list[str]
     ) -> tuple[subprocess.CompletedProcess, list[str]]:
@@ -401,6 +410,43 @@ class TestRbbPreflight(TestCase):
             result.stderr,
         )
 
+    def test_core_ecmp_suite_accepts_two_paths_and_safe_defaults(self) -> None:
+        self._write_valid_config()
+        self._add_second_core_path()
+
+        result = self._run_check(with_traffic=True, suite="core-ecmp")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_core_ecmp_suite_rejects_reversed_metric_order(self) -> None:
+        self._write_valid_config()
+        self._add_second_core_path()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="core-ecmp",
+            environment={
+                "TAAC_RBB_OPENR_PREFERRED_METRIC": "100",
+                "TAAC_RBB_OPENR_STANDBY_METRIC": "10",
+            },
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must be greater", result.stderr)
+
+    def test_core_ecmp_suite_rejects_impossible_path_share(self) -> None:
+        self._write_valid_config()
+        self._add_second_core_path()
+
+        result = self._run_check(
+            with_traffic=True,
+            suite="core-ecmp",
+            environment={"TAAC_RBB_CORE_ECMP_MIN_PATH_SHARE_PCT": "51"},
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must not exceed 100", result.stderr)
+
     def test_check_accepts_environment_without_rbb_env(self) -> None:
         self._write_valid_config()
         environment = self._profile_environment()
@@ -517,6 +563,12 @@ class TestRbbPreflight(TestCase):
                 "",
             ),
             (
+                "core-ecmp",
+                ["--with-traffic"],
+                "/workspace/examples/rbb_core_ecmp_config.py",
+                "",
+            ),
+            (
                 "tail-decap",
                 ["--with-traffic"],
                 "/workspace/examples/rbb_srv6_tail_decap_config.py",
@@ -555,6 +607,10 @@ class TestRbbPreflight(TestCase):
             (["--suite", "unknown"], "unknown suite"),
             (
                 ["--suite", "traffic-foundation"],
+                "requires --with-traffic",
+            ),
+            (
+                ["--suite", "core-ecmp"],
                 "requires --with-traffic",
             ),
             (

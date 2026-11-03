@@ -242,9 +242,11 @@ Validate all local inputs before contacting the lab:
 This checks the secrets schema and permissions, required settings, DUT rows,
 CSV shape, topology relationships, placeholder endpoints, and—when
 `--with-traffic` is present—the IXIA credentials, controller/chassis, ports,
-and advertised-prefix contract. For `--suite traffic-foundation`, it also
-validates the optional bandwidth, line-rate, frame-size, timing, and tolerance
-settings. For `--suite resilience`, it validates the optional core-index,
+and advertised-prefix contract. For `--suite traffic-foundation` and
+`core-ecmp`, it also validates the optional bandwidth, line-rate, frame-size,
+timing, and tolerance settings. `core-ecmp` adds the Open/R metric and minimum
+per-path-share contract. For `--suite resilience`, preflight validates the
+optional core-index,
 selected-path-share, and maximum-loss numeric ranges.
 It runs inside the already-built TAAC image but does not contact a DUT or
 reserve IXIA. The same preflight runs automatically inside the single container
@@ -387,8 +389,8 @@ If an isolated lab uses an explicitly owned prefix outside that allowlist, set
 `TAAC_RBB_SKIP_ADVERTISED_PREFIXES_CHECK=1` in `rbb.env`. This opt-out applies
 only to the RBB TestConfig; preflight and the factory still restrict IXIA to
 the single exact IPv6 prefix above for the base, tail-decap, and resilience
-suites. The traffic-foundation suite instead validates its explicitly declared,
-non-overlapping head and tail prefix ranges.
+suites. The traffic-foundation and core-ECMP suites instead validate their
+explicitly declared, non-overlapping IPv6 head and tail prefix ranges.
 
 ### Select a test suite
 
@@ -402,6 +404,7 @@ with `--suite`:
 | `base` | Original three-uSID steering and route-owner lifecycle | Optional |
 | `state-audit` | Default full read-only common audits: OpenR route ownership/reachability and per-core NDP resolution | None |
 | `traffic-foundation` | Phase 1 TC-05/06/07/13/14/17: bidirectional route propagation, throughput/loss, and IXIA-to-DUT counter correlation | Required |
+| `core-ecmp` | Phase 1 adapted TC-02 and full TC-03/08: reversible Open/R path selection, equal-cost RIB/FIB, and traffic on every declared core path | Required; RESTPy/TaacIxia for TC-08 |
 | `tail-decap` | Phase 2 TC-24: final-uSID decapsulation and inner-table lookup | Required |
 | `resilience` | Phase 2 TC-15/104, partial TC-30, and adapted TC-99: warmboot, bgpd restart, and edge outage | Required; RESTPy/TaacIxia only |
 
@@ -423,6 +426,22 @@ line rate. Set `TAAC_RBB_EDGE_BANDWIDTH_GBPS` and
 drain, frame-size, rate-tolerance, and DUT-counter-tolerance inputs are listed
 in `examples/rbb_srv6_profile.env.example`.
 
+The core-ECMP suite snapshots pristine Open/R state on both DUTs and refuses to
+run when a selected link is down/overloaded, has a metric increment, or already
+has an adjacency-metric override. TC-02 temporarily makes each declared path
+the unique lowest-cost path in turn; TC-03 restores equal metrics. Both verify
+the exact logical next-hop set reported by Open/R Decision and independently
+verify FBOSS client ownership, FIB installation, next-hop count, and link-local
+scope. TC-08 keeps TAAC's default variable TCP source/destination port ranges,
+providing many five-tuples for the DUT ECMP hash, and requires a measurable
+share on every R1 egress and R2 ingress core path before accepting end-to-end
+loss. The suite fails before changing Open/R metrics if the selected backend
+cannot render those variable L4 ranges; TC-08 currently requires
+RESTPy/TaacIxia. Cleanup clears only task-owned overrides and verifies path
+identity, health, and absence of overrides while allowing dynamic RTT metrics
+to reconverge. TC-02 is labeled adapted because the source requirement
+names a three-role topology while this setup has two DUTs.
+
 Examples for an already configured lab:
 
 ```bash
@@ -431,6 +450,7 @@ Examples for an already configured lab:
 
 # Traffic-backed functional suites.
 ./scripts/run-rbb-srv6.sh --suite traffic-foundation --with-traffic
+./scripts/run-rbb-srv6.sh --suite core-ecmp --with-traffic
 ./scripts/run-rbb-srv6.sh --suite tail-decap --with-traffic
 ./scripts/run-rbb-srv6.sh --suite resilience --with-traffic
 ```

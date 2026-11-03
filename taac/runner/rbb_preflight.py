@@ -209,7 +209,14 @@ def _validate_circuit_shape(path: Path) -> None:
 
 
 _RBB_SUITES = frozenset(
-    ("base", "state-audit", "traffic-foundation", "tail-decap", "resilience")
+    (
+        "base",
+        "state-audit",
+        "traffic-foundation",
+        "core-ecmp",
+        "tail-decap",
+        "resilience",
+    )
 )
 
 
@@ -305,6 +312,39 @@ def _validate_traffic_foundation_inputs() -> None:
         raise OSSConfigError(f"{name} must be finite and in [0, 100]")
 
 
+def _validate_core_ecmp_inputs() -> None:
+    """Validate Open/R metric and per-path traffic evidence knobs."""
+    maximum = (1 << 31) - 1
+    _validate_optional_integer(
+        "TAAC_RBB_OPENR_PREFERRED_METRIC", minimum=1, maximum=maximum
+    )
+    _validate_optional_integer(
+        "TAAC_RBB_OPENR_STANDBY_METRIC", minimum=1, maximum=maximum
+    )
+    try:
+        preferred = int(os.environ.get("TAAC_RBB_OPENR_PREFERRED_METRIC", "10"))
+        standby = int(os.environ.get("TAAC_RBB_OPENR_STANDBY_METRIC", "1000"))
+    except ValueError:
+        # _validate_optional_integer has already produced the precise error.
+        return
+    if standby <= preferred:
+        raise OSSConfigError(
+            "TAAC_RBB_OPENR_STANDBY_METRIC must be greater than "
+            "TAAC_RBB_OPENR_PREFERRED_METRIC"
+        )
+
+    name = "TAAC_RBB_CORE_ECMP_MIN_PATH_SHARE_PCT"
+    raw = os.environ.get(name)
+    if raw is None:
+        return
+    try:
+        share = float(raw.strip())
+    except ValueError as exc:
+        raise OSSConfigError(f"{name} must be finite and in (0, 100]") from exc
+    if not math.isfinite(share) or not 0 < share <= 100:
+        raise OSSConfigError(f"{name} must be finite and in (0, 100]")
+
+
 def _advertised_ipv6_range(
     *,
     start: str,
@@ -358,7 +398,7 @@ def _validate_traffic_contract(suite: str) -> None:
     if steered.version != 6:
         raise OSSConfigError("The IXIA tail-prefix contract must use IPv6")
 
-    if suite == "traffic-foundation":
+    if suite in ("traffic-foundation", "core-ecmp"):
         head, _, head_last = _advertised_ipv6_range(
             start=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX", "2001:db8:feed::"),
             prefix_length=os.environ.get("TAAC_RBB_IXIA_HEAD_PREFIX_LEN", "64"),
@@ -407,8 +447,10 @@ def run_preflight(
 
     if suite == "resilience":
         _validate_resilience_inputs()
-    elif suite == "traffic-foundation":
+    elif suite in ("traffic-foundation", "core-ecmp"):
         _validate_traffic_foundation_inputs()
+        if suite == "core-ecmp":
+            _validate_core_ecmp_inputs()
 
     # Both local files are convenience inputs, not required interfaces. This
     # keeps the wrapper usable in CI and in organizations that inject settings
@@ -477,6 +519,12 @@ def run_preflight(
             allow_placeholder=False,
             require_ixia=with_traffic,
         )
+        if suite == "core-ecmp":
+            from taac.testconfigs.routing.util.bgp_rbb_core_ecmp_profiles import (
+                validate_core_ecmp_topology,
+            )
+
+            validate_core_ecmp_topology(topology)
         if setup_duts or setup_dut_edges:
             from taac.testconfigs.routing.util import bgp_rbb_constants as C
             from taac.testconfigs.routing.util.bgp_rbb_bootstrap_config import (
