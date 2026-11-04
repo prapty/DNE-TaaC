@@ -213,6 +213,7 @@ _RBB_SUITES = frozenset(
     (
         "base",
         "state-audit",
+        "named-nhg-lifecycle",
         "traffic-foundation",
         "core-ecmp",
         "dual-stack-traffic",
@@ -725,7 +726,13 @@ def run_preflight(
             allow_placeholder=False,
             require_ixia=with_traffic,
         )
-        if suite == "core-ecmp":
+        if suite == "named-nhg-lifecycle":
+            from taac.testconfigs.routing.util.bgp_rbb_named_nhg_profiles import (
+                build_rbb_named_nhg_profiles,
+            )
+
+            build_rbb_named_nhg_profiles(topology)
+        elif suite == "core-ecmp":
             from taac.testconfigs.routing.util.bgp_rbb_core_ecmp_profiles import (
                 validate_core_ecmp_topology,
             )

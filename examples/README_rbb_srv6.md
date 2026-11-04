@@ -168,6 +168,7 @@ lab must either be configured with that plan or override it to match the DUTs.
 | Core PC 1 | `198.51.100.4/30`, `2001:db8:c1::/127` | `TAAC_RBB_R{1,2}_CORE1_V{4,6}` |
 | Inner destination pool | `2001:db8:beef::/64` | `TAAC_RBB_IXIA_TAIL_PREFIX` + `_LEN` |
 | TE_AGENT destination | `2001:db8:beef::/64` | `TAAC_RBB_TAIL_PREFIX` |
+| Named-NHG lifecycle test prefix | `2001:db8:ff00::/64` | `TAAC_RBB_NAMED_NHG_TEST_PREFIX` |
 | R1 IXIA link / gateway | `2001:db8:a:3::2/64` / `2001:db8:a:3::1` | `TAAC_RBB_IXIA_R1_EDGE_V6` / `_GW_V6` |
 | R2 IXIA link / gateway | `2001:db8:a:10::2/64` / `2001:db8:a:10::1` | `TAAC_RBB_IXIA_R2_EDGE_V6` / `_GW_V6` |
 
@@ -408,6 +409,7 @@ with `--suite`:
 | --- | --- | --- |
 | `base` | Original three-uSID steering and route-owner lifecycle | Optional |
 | `state-audit` | Default full read-only common audits: OpenR route ownership/reachability and per-core NDP resolution | None |
+| `named-nhg-lifecycle` | Partial Phase 2 TC-02 named SRv6 NHG/NHE programming plus the partial TC-06/07 forward-reference lifecycle where FBOSS supports it | None |
 | `traffic-foundation` | Phase 1 TC-05/06/07/13/14/17: bidirectional route propagation, throughput/loss, and IXIA-to-DUT counter correlation | Required |
 | `core-ecmp` | Phase 1 adapted TC-02 and full TC-03/08: reversible Open/R path selection, equal-cost RIB/FIB, and traffic on every declared core path | Required; RESTPy/TaacIxia for TC-08 |
 | `dual-stack-traffic` | Phase 1 TC-11/12 and partial TC-15: IPv4 forwarding plus concurrent bidirectional IPv4/IPv6 throughput and loss | Required |
@@ -425,6 +427,27 @@ samples and is rejected by the capability gate before any resilience
 disruption. Optional DUT bootstrap and edge setup, when explicitly requested,
 run earlier as test-configuration setup tasks and retain their normal guarded
 teardown behavior.
+
+The device-only named-NHG lifecycle suite uses structured FBOSS Thrift for
+both mutations and exact readback. TC-02 creates an adopter-neutral named SRv6
+NHG, references it from a temporary TE_AGENT route, and verifies its NHE
+address, segment list, tunnel, RIB reference, and FIB programming before
+deleting the route and then the NHG. All three cases use the isolated
+`TAAC_RBB_NAMED_NHG_TEST_PREFIX`; preflight rejects overlap with the active
+service prefix or SRv6 locator. TC-06 and TC-07 preserve the source test plan's
+stricter forward-reference contract: a route that names a not-yet-created NHG
+must remain as an unresolved TE_AGENT RIB candidate, then resolve into the
+agent FIB after the NHG is added. A resolved route from another client for the
+same prefix does not falsely make the TE_AGENT candidate programmed. FBOSS
+versions that atomically reject a missing-NHG route report those cases as
+explicitly unsupported and SKIPPED; rejection is never accepted as a false
+TC-06/07 pass.
+This device-only batch verifies exact structured API and resolved agent-FIB
+state. It does not independently query ASIC objects or generate traffic, so the
+profiles are explicitly labeled PARTIAL rather than claiming full source-plan
+coverage. The suite mutates R1 route/NHG state and should run only on an
+exclusive testbed; collision guards and cleanup prevent adoption or deletion
+of pre-existing operator-owned objects.
 
 The traffic-foundation rate check defaults to a 400-Gbps edge running at 10%
 line rate. Set `TAAC_RBB_EDGE_BANDWIDTH_GBPS` and
@@ -461,6 +484,9 @@ Examples for an already configured lab:
 ```bash
 # Device-only common-state checks.
 ./scripts/run-rbb-srv6.sh --suite state-audit
+
+# Device-only named SRv6 NHG/NHE lifecycle checks.
+./scripts/run-rbb-srv6.sh --suite named-nhg-lifecycle
 
 # Traffic-backed functional suites.
 ./scripts/run-rbb-srv6.sh --suite traffic-foundation --with-traffic

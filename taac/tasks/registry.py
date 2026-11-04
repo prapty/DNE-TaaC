@@ -207,6 +207,9 @@ from taac.tasks.rbb_srv6_counter_delta_task import (
 from taac.tasks.rbb_srv6_direct_route_task import (
     RbbSrv6DirectRouteTask,
 )
+from taac.tasks.rbb_srv6_named_nhg_task import (
+    RbbSrv6NamedNhgTask,
+)
 from taac.tasks.rbb_srv6_verify_task import (
     RbbSrv6VerifyTask,
 )
@@ -278,6 +281,7 @@ TASK_REGISTRY: t.List[t.Type[BaseTask]] = [
     RbbOpenrCorePathTask,
     RbbSrv6CounterDeltaTask,
     RbbSrv6DirectRouteTask,
+    RbbSrv6NamedNhgTask,
     RbbSrv6VerifyTask,
     RbbSplitAgentRecoveryTask,
     RbbStateAuditTask,

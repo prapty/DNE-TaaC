@@ -12,6 +12,7 @@ import sys
 import time
 import traceback
 import typing as t
+import unittest
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -1519,9 +1520,10 @@ class TaacRunner:
                 self._test_case_investigation_attempted = False
                 test_case_results = []
                 test_case_start_time = int(time.time())
-                self._current_playbook_section = self.test_summary.start_section(
+                playbook_section = self.test_summary.start_section(
                     f"Playbook: {playbook.name} | {test_device.name}"
                 )
+                self._current_playbook_section = playbook_section
                 _start_test_case_time_window(self.jq_vars, int(time.time()))
                 await self._capture_topology_baseline(playbook)
                 with suppress_console_logs(self.logger):
@@ -1757,6 +1759,11 @@ class TaacRunner:
                         for error in (_playbook_cleanup_exc, _teardown_exc)
                         if error is not None
                     ]
+                    if _playbook_cleanup_exc is not None:
+                        self._mark_skipped_section_cleanup_failure(
+                            playbook_section,
+                            _playbook_cleanup_exc,
+                        )
                     self._raise_test_case_cleanup_errors(_stage_exc, _cleanup_errors)
 
                 self._record_playbook_result(
@@ -1795,8 +1802,16 @@ class TaacRunner:
             # only here so it carries the checks the fallback cleanup above
             # just appended to test_case_results.
             if _npi_iteration_count > recorded_iterations:
+                status_override = self._playbook_status_override(
+                    _run_exc,
+                    test_case_results,
+                )
                 self._record_playbook_result(
-                    playbook, test_device, _npi_iteration_count, test_case_results
+                    playbook,
+                    test_device,
+                    _npi_iteration_count,
+                    test_case_results,
+                    status_override=status_override,
                 )
             # Publish NPI result immediately after all iterations complete,
             # before returning to run_tests for the next playbook.
@@ -1816,16 +1831,35 @@ class TaacRunner:
         results: t.Sequence[trr_types.CheckResult],
         *,
         empty_status: hc_types.HealthCheckStatus = hc_types.HealthCheckStatus.UNKNOWN,
+        status_override: hc_types.HealthCheckStatus | None = None,
     ) -> None:
         self.playbook_results.append(
             trr_types.PlaybookResult(
                 playbook_name=playbook.name,
                 dut=test_device.name,
                 iteration=iteration,
-                status=worst_check_status(results) if results else empty_status,
+                status=(
+                    status_override
+                    if status_override is not None
+                    else worst_check_status(results)
+                    if results
+                    else empty_status
+                ),
                 results=list(results),
             )
         )
+
+    @staticmethod
+    def _playbook_status_override(
+        run_error: BaseException | None,
+        results: t.Sequence[trr_types.CheckResult],
+    ) -> hc_types.HealthCheckStatus | None:
+        """Preserve a clean SkipTest in the serialized playbook result."""
+        if not isinstance(run_error, unittest.SkipTest):
+            return None
+        if any(result.status in FAILED_HC_STATUSES for result in results):
+            return None
+        return hc_types.HealthCheckStatus.SKIP
 
     def _record_npi_iteration_error(
         self,
@@ -1929,6 +1963,33 @@ class TaacRunner:
         if len(cleanup_errors) == 1:
             raise cleanup_errors[0]
         raise _group_exceptions("test case restoration failed", cleanup_errors)
+
+    @staticmethod
+    def _mark_skipped_section_cleanup_failure(
+        section: SectionResult | None,
+        error: BaseException,
+    ) -> None:
+        """Expose a late playbook-cleanup failure on a finalized SKIP row."""
+        if (
+            section is None
+            or section.status != SectionStatus.SKIPPED
+            or isinstance(error, asyncio.CancelledError)
+        ):
+            return
+        section.status = (
+            SectionStatus.INFRA_ERROR
+            if isinstance(error, TestbedError)
+            else SectionStatus.FAIL
+        )
+        details = [
+            detail
+            for detail in (
+                section.error_message,
+                f"Cleanup failed: {error}",
+            )
+            if detail
+        ]
+        section.error_message = "; ".join(details)
 
     def _baseline_participants_for(
         self, playbook: taac_types.Playbook
@@ -2407,9 +2468,22 @@ class TaacRunner:
                 logger=self.logger,
             )
             if _stage_error:
-                self.test_summary.end_section(
-                    stage_section, SectionStatus.FAIL, str(_stage_error)
+                status = (
+                    SectionStatus.SKIPPED
+                    if isinstance(_stage_error, unittest.SkipTest)
+                    else SectionStatus.FAIL
                 )
+                if (
+                    status == SectionStatus.SKIPPED
+                    and self._current_playbook_section is not None
+                ):
+                    # Preserve the skip on the parent playbook section. Normal
+                    # teardown still runs and may override it with a real
+                    # restoration or health-check failure. A later playbook-
+                    # cleanup failure is still grouped and fails the OSS result.
+                    self._current_playbook_section.status = SectionStatus.SKIPPED
+                    self._current_playbook_section.error_message = str(_stage_error)
+                self.test_summary.end_section(stage_section, status, str(_stage_error))
             else:
                 self.test_summary.end_section(stage_section, SectionStatus.PASS)
 
@@ -2646,10 +2720,16 @@ class TaacRunner:
                     await self.run_test_case(playbook, test_device)
                 except Exception as e:
                     failed_playbooks.append((playbook.name, dut, e))
-                    self.logger.error(
-                        f"\033[31m  Playbook '{playbook.name}' failed on "
-                        f"{dut}: {e}\033[0m"
-                    )
+                    if isinstance(e, unittest.SkipTest):
+                        self.logger.info(
+                            f"\033[33m  Playbook '{playbook.name}' skipped on "
+                            f"{dut}: {e}\033[0m"
+                        )
+                    else:
+                        self.logger.error(
+                            f"\033[31m  Playbook '{playbook.name}' failed on "
+                            f"{dut}: {e}\033[0m"
+                        )
                     if self._topology_baseline_capture_failed:
                         self.logger.error(
                             "Stopping this TestConfig because the IXIA topology "
@@ -2709,9 +2789,16 @@ class TaacRunner:
                 try:
                     await self.run_step(step_obj)
                 except Exception as e:
-                    self.logger.error(
-                        f"Step {step_obj.STEP_NAME.name} failed on {step_obj.device.name}: {e}"
-                    )
+                    if isinstance(e, unittest.SkipTest):
+                        self.logger.info(
+                            f"Step {step_obj.STEP_NAME.name} skipped on "
+                            f"{step_obj.device.name}: {e}"
+                        )
+                    else:
+                        self.logger.error(
+                            f"Step {step_obj.STEP_NAME.name} failed on "
+                            f"{step_obj.device.name}: {e}"
+                        )
                     raise e
 
     async def run_step(
@@ -3028,7 +3115,16 @@ class TaacRunner:
                 "; ".join(str(error) for error in exceptions),
             )
         else:
-            self.test_summary.end_section(section, SectionStatus.PASS)
+            status = (
+                SectionStatus.SKIPPED
+                if section.status == SectionStatus.SKIPPED
+                else SectionStatus.PASS
+            )
+            self.test_summary.end_section(
+                section,
+                status,
+                section.error_message if status == SectionStatus.SKIPPED else "",
+            )
         self._last_completed_playbook_section = section
         self._current_playbook_section = None
 

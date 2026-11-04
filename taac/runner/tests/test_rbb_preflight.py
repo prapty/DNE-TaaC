@@ -442,6 +442,19 @@ class TestRbbPreflight(TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_named_nhg_suite_validates_its_isolated_test_prefix(self) -> None:
+        self._write_valid_config()
+        profile = self.config_dir / "rbb.env"
+        with profile.open("a", encoding="utf-8") as stream:
+            stream.write(
+                "TAAC_RBB_NAMED_NHG_TEST_PREFIX=2001:db8:beef::/64\n"
+            )
+
+        result = self._run_check(suite="named-nhg-lifecycle")
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("active tail service prefix", result.stderr)
+
     def test_core_ecmp_suite_rejects_reversed_metric_order(self) -> None:
         self._write_valid_config()
         self._add_second_core_path()
@@ -696,6 +709,12 @@ class TestRbbPreflight(TestCase):
                 "",
             ),
             (
+                "named-nhg-lifecycle",
+                [],
+                "/workspace/examples/rbb_named_nhg_config.py",
+                "",
+            ),
+            (
                 "traffic-foundation",
                 ["--with-traffic"],
                 "/workspace/examples/rbb_traffic_foundation_config.py",
@@ -764,6 +783,10 @@ class TestRbbPreflight(TestCase):
             ),
             (
                 ["--suite", "state-audit", "--with-traffic"],
+                "device-only",
+            ),
+            (
+                ["--suite", "named-nhg-lifecycle", "--with-traffic"],
                 "device-only",
             ),
         ):
