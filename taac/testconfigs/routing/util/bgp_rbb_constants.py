@@ -182,6 +182,13 @@ NAMED_NHG_TEST_PREFIX: str = os.environ.get(
     "TAAC_RBB_NAMED_NHG_TEST_PREFIX", "2001:db8:ff00::/64"
 )
 
+# Isolated service prefix used by Phase-2 TC-01. R2 originates this prefix
+# only for the duration of the lifecycle playbook, with R2_LOOPBACK_V6 as its
+# explicit iBGP next hop; cleanup restores the exact pre-run BGP config.
+RECURSIVE_ROUTE_TEST_PREFIX: str = os.environ.get(
+    "TAAC_RBB_RECURSIVE_ROUTE_TEST_PREFIX", "2001:db8:ff01::/64"
+)
+
 # Optional platform-specific display token for the S10 core-RIF verify. When it
 # is empty, TAAC derives the expected IPv6 address from the topology-selected
 # CORE<n> setting. Most users should leave this unset.

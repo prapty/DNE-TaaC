@@ -455,6 +455,19 @@ class TestRbbPreflight(TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("active tail service prefix", result.stderr)
 
+    def test_named_nhg_suite_validates_recursive_route_prefix(self) -> None:
+        self._write_valid_config()
+        profile = self.config_dir / "rbb.env"
+        with profile.open("a", encoding="utf-8") as stream:
+            stream.write(
+                "TAAC_RBB_RECURSIVE_ROUTE_TEST_PREFIX=2001:db8:beef::/64\n"
+            )
+
+        result = self._run_check(suite="named-nhg-lifecycle")
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("overlaps another RBB test resource", result.stderr)
+
     def test_core_ecmp_suite_rejects_reversed_metric_order(self) -> None:
         self._write_valid_config()
         self._add_second_core_path()

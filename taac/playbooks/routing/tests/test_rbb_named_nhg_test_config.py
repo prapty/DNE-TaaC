@@ -37,12 +37,13 @@ def _topology() -> RbbTopology:
 
 
 class RbbNamedNhgTestConfigTest(unittest.TestCase):
-    def test_default_config_exposes_three_independent_playbooks(self) -> None:
+    def test_default_config_exposes_four_independent_playbooks(self) -> None:
         config = create_rbb_named_nhg_test_config(_topology())
 
         self.assertEqual(
             [playbook.name for playbook in config.playbooks],
             [
+                "rbb_p2_tc01_recursive_route",
                 "rbb_p2_tc02_program_named_srv6_nhg",
                 "rbb_p2_tc06_named_nhg_forward_reference",
                 "rbb_p2_tc07_resolve_named_nhg_forward_reference",
@@ -72,6 +73,16 @@ class RbbNamedNhgTestConfigTest(unittest.TestCase):
                 "rbb_p2_tc02_program_named_srv6_nhg",
                 "rbb_p2_tc07_resolve_named_nhg_forward_reference",
             ],
+        )
+
+    def test_tc01_can_be_selected_independently(self) -> None:
+        config = create_rbb_named_nhg_test_config(
+            _topology(), testplan_ids=["phase2:TC-01"]
+        )
+
+        self.assertEqual(
+            [playbook.name for playbook in config.playbooks],
+            ["rbb_p2_tc01_recursive_route"],
         )
 
     def test_empty_selection_is_rejected(self) -> None:

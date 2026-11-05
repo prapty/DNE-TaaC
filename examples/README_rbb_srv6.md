@@ -409,7 +409,7 @@ with `--suite`:
 | --- | --- | --- |
 | `base` | Original three-uSID steering and route-owner lifecycle | Optional |
 | `state-audit` | Default full read-only common audits: OpenR route ownership/reachability and per-core NDP resolution | None |
-| `named-nhg-lifecycle` | Partial Phase 2 TC-02 named SRv6 NHG/NHE programming plus the partial TC-06/07 forward-reference lifecycle where FBOSS supports it | None |
+| `named-nhg-lifecycle` | Full Phase 2 TC-01 recursive iBGP/OpenR resolution, partial TC-02 named SRv6 NHG/NHE programming, and partial TC-06/07 forward-reference lifecycle where FBOSS supports it | None |
 | `traffic-foundation` | Phase 1 TC-05/06/07/13/14/17: bidirectional route propagation, throughput/loss, and IXIA-to-DUT counter correlation | Required |
 | `core-ecmp` | Phase 1 adapted TC-02 and full TC-03/08: reversible Open/R path selection, equal-cost RIB/FIB, and traffic on every declared core path | Required; RESTPy/TaacIxia for TC-08 |
 | `dual-stack-traffic` | Phase 1 TC-11/12 and partial TC-15: IPv4 forwarding plus concurrent bidirectional IPv4/IPv6 throughput and loss | Required |
@@ -428,11 +428,19 @@ disruption. Optional DUT bootstrap and edge setup, when explicitly requested,
 run earlier as test-configuration setup tasks and retain their normal guarded
 teardown behavior.
 
-The device-only named-NHG lifecycle suite uses structured FBOSS Thrift for
-both mutations and exact readback. TC-02 creates an adopter-neutral named SRv6
+The device-only route lifecycle suite starts with TC-01. It snapshots R2's
+`bgp.json`, originates `TAAC_RBB_RECURSIVE_ROUTE_TEST_PREFIX` with the routed
+R2 loopback as its explicit iBGP next hop, and verifies on R1 that the service
+prefix is BGPD-owned, the loopback is OPENR-owned, and both resolve to the
+same non-empty agent-FIB underlay next-hop set. Cleanup restores the exact
+pre-run config, restarts bgpd, and waits for both RIB and FIB withdrawal. This
+config lifecycle requires root SSH access to R2 and an exclusive testbed.
+
+The named-NHG cases use structured FBOSS Thrift for both mutations and exact
+readback. TC-02 creates an adopter-neutral named SRv6
 NHG, references it from a temporary TE_AGENT route, and verifies its NHE
 address, segment list, tunnel, RIB reference, and FIB programming before
-deleting the route and then the NHG. All three cases use the isolated
+deleting the route and then the NHG. The three named-NHG cases use the isolated
 `TAAC_RBB_NAMED_NHG_TEST_PREFIX`; preflight rejects overlap with the active
 service prefix or SRv6 locator. TC-06 and TC-07 preserve the source test plan's
 stricter forward-reference contract: a route that names a not-yet-created NHG

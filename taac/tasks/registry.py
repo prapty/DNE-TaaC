@@ -198,6 +198,7 @@ from taac.tasks.rbb_ixia_bgp_learned_routes_task import (
 )
 from taac.tasks.rbb_ixia_capability_task import RbbIxiaCapabilityTask
 from taac.tasks.rbb_openr_core_path_task import RbbOpenrCorePathTask
+from taac.tasks.rbb_recursive_route_task import RbbRecursiveRouteTask
 from taac.tasks.rbb_split_agent_recovery_task import (
     RbbSplitAgentRecoveryTask,
 )
@@ -279,6 +280,7 @@ TASK_REGISTRY: t.List[t.Type[BaseTask]] = [
     RbbIxiaBgpLearnedRoutesTask,
     RbbIxiaCapabilityTask,
     RbbOpenrCorePathTask,
+    RbbRecursiveRouteTask,
     RbbSrv6CounterDeltaTask,
     RbbSrv6DirectRouteTask,
     RbbSrv6NamedNhgTask,

@@ -730,8 +730,15 @@ def run_preflight(
             from taac.testconfigs.routing.util.bgp_rbb_named_nhg_profiles import (
                 build_rbb_named_nhg_profiles,
             )
+            from taac.testconfigs.routing.util.bgp_rbb_recursive_route_profiles import (
+                RECURSIVE_ROUTE_PROFILE,
+            )
 
             build_rbb_named_nhg_profiles(topology)
+            # Import-time construction validates TC-01's isolated prefix and
+            # recursive loopback against the complete RBB address plan.
+            if RECURSIVE_ROUTE_PROFILE.testplan_id != "phase2:TC-01":
+                raise ValueError("invalid recursive-route profile")
         elif suite == "core-ecmp":
             from taac.testconfigs.routing.util.bgp_rbb_core_ecmp_profiles import (
                 validate_core_ecmp_topology,
