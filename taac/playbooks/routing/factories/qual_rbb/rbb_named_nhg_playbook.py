@@ -20,6 +20,9 @@ from taac.testconfigs.routing.util.bgp_rbb_named_nhg_profiles import (
     RbbNamedNhgAction,
     RbbNamedNhgProfile,
 )
+from taac.testconfigs.routing.util.bgp_rbb_recursive_route_profiles import (
+    RECURSIVE_ROUTE_PROFILE,
+)
 
 _TASK_NAME = "rbb_srv6_named_nhg"
 
@@ -51,6 +54,31 @@ def _stage(profile: RbbNamedNhgProfile, step: Step, label: str) -> t.Any:
     return create_steps_stage(
         steps=[step],
         description=f"{profile.testplan_id}: {label}",
+    )
+
+
+def _recursive_step(
+    head_hostname: str,
+    tail_hostname: str,
+    action: str,
+    *,
+    loopback_owner: str = "OPENR",
+) -> Step:
+    return create_run_task_step(
+        task_name="rbb_recursive_route",
+        params_dict={
+            "action": action,
+            "head_hostname": head_hostname,
+            "tail_hostname": tail_hostname,
+            "route_prefix": RECURSIVE_ROUTE_PROFILE.route_prefix,
+            "recursive_next_hop": RECURSIVE_ROUTE_PROFILE.recursive_next_hop,
+            "loopback_owner": loopback_owner,
+        },
+        description=(
+            f"[phase2:TC-03] {action} recursive route "
+            f"with {loopback_owner} loopback owner"
+        ),
+        start_traffic=False,
     )
 
 
@@ -96,6 +124,82 @@ def _tc02_stages(profile: RbbNamedNhgProfile, hostname: str) -> list[t.Any]:
             profile,
             _step(profile, hostname, "verify_programmed"),
             "verify exact route ownership and resolved agent-FIB next hops",
+        ),
+    ]
+
+
+def _tc03_stages(
+    profile: RbbNamedNhgProfile, hostname: str, tail_hostname: str
+) -> list[t.Any]:
+    """Prove OPENR-to-TE_AGENT loopback ownership and recursive resolution."""
+    return [
+        _stage(
+            profile,
+            _recursive_step(hostname, tail_hostname, "precheck"),
+            "refuse a pre-existing service-prefix test route",
+        ),
+        _stage(
+            profile,
+            _step(profile, hostname, "precheck"),
+            "refuse pre-existing loopback ownership or named-NHG state",
+        ),
+        _stage(
+            profile,
+            _recursive_step(hostname, tail_hostname, "install"),
+            "originate the load-bearing prefix through the remote loopback",
+        ),
+        _stage(
+            profile,
+            _recursive_step(hostname, tail_hostname, "verify"),
+            "prove the baseline resolves through the OPENR loopback winner",
+        ),
+        _stage(
+            profile,
+            _step(profile, hostname, "program_nhg", include_members=True),
+            "program the named SRv6 NHG",
+        ),
+        _stage(
+            profile,
+            _step(profile, hostname, "program_route"),
+            "install a better-distance TE_AGENT loopback route",
+        ),
+        _stage(
+            profile,
+            _step(
+                profile,
+                hostname,
+                "verify_nhg",
+                include_members=True,
+                expected_programmed=True,
+            ),
+            "verify the loopback-referenced NHG is programmed",
+        ),
+        _stage(
+            profile,
+            _step(profile, hostname, "verify_programmed"),
+            "prove TE_AGENT beats OPENR and programs the SRv6 FIB members",
+        ),
+        _stage(
+            profile,
+            _recursive_step(
+                hostname, tail_hostname, "verify", loopback_owner="TE_AGENT"
+            ),
+            "prove the load-bearing prefix follows the TE_AGENT loopback winner",
+        ),
+        _stage(
+            profile,
+            _step(profile, hostname, "cleanup", include_members=True),
+            "remove the TE_AGENT loopback route and named NHG",
+        ),
+        _stage(
+            profile,
+            _recursive_step(hostname, tail_hostname, "verify"),
+            "prove OPENR regains the loopback and recursive service route",
+        ),
+        _stage(
+            profile,
+            _recursive_step(hostname, tail_hostname, "cleanup"),
+            "restore the exact BGP baseline and service-prefix withdrawal",
         ),
     ]
 
@@ -165,12 +269,20 @@ def create_rbb_named_nhg_playbook(
     profile: RbbNamedNhgProfile,
     *,
     r1_hostname: str,
+    r2_hostname: str | None = None,
 ) -> Playbook:
-    """Build one self-cleaning TC-02, TC-06, or TC-07 playbook."""
+    """Build one self-cleaning named-NHG lifecycle playbook."""
     if not r1_hostname.strip():
         raise ValueError("named-NHG playbook requires the R1 hostname")
-    if profile.action is RbbNamedNhgAction.PROGRAM_AND_VERIFY:
+    if profile.action in {
+        RbbNamedNhgAction.PROGRAM_AND_VERIFY,
+        RbbNamedNhgAction.BIND_SERVICE_PREFIX,
+    }:
         stages = _tc02_stages(profile, r1_hostname)
+    elif profile.action is RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE:
+        if not r2_hostname or not r2_hostname.strip() or r2_hostname == r1_hostname:
+            raise ValueError("TC-03 requires distinct R1 and R2 hostnames")
+        stages = _tc03_stages(profile, r1_hostname, r2_hostname)
     elif profile.action is RbbNamedNhgAction.FORWARD_REFERENCE:
         stages = _tc06_stages(profile, r1_hostname)
     elif profile.action is RbbNamedNhgAction.RESOLVE_FORWARD_REFERENCE:
@@ -188,6 +300,11 @@ def create_rbb_named_nhg_playbook(
         if profile.unmet_requirements
         else ""
     )
+    cleanup_steps = [_step(profile, r1_hostname, "cleanup", include_members=True)]
+    if profile.action is RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE:
+        cleanup_steps.append(
+            _recursive_step(r1_hostname, t.cast(str, r2_hostname), "cleanup")
+        )
     return Playbook(
         name=profile.playbook_name,
         description=(
@@ -197,7 +314,7 @@ def create_rbb_named_nhg_playbook(
         prechecks=[],
         postchecks=[],
         stages=stages,
-        cleanup_steps=[_step(profile, r1_hostname, "cleanup", include_members=True)],
+        cleanup_steps=cleanup_steps,
         traffic_items_to_start=None,
         device_regexes=[f"^{re.escape(r1_hostname)}$"],
     )

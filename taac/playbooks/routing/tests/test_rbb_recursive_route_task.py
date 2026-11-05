@@ -99,6 +99,36 @@ class RbbRecursiveRouteTaskTest(unittest.IsolatedAsyncioTestCase):
                 "r1.example", "2001:db8:ff01::/64", "2001:db8:0:2::1"
             )
 
+    async def test_verify_accepts_te_agent_as_loopback_fib_winner(self) -> None:
+        driver = MagicMock()
+        service = _route("2001:db8:ff01::/64", (_binary("2001:db8:0:2::1"),))
+        loopback = _route("2001:db8:0:2::1/128")
+        driver.async_get_route_table_by_client = AsyncMock(
+            side_effect=lambda client: [service] if client == 0 else [loopback]
+        )
+        resolved = (_binary("2001:db8:12::2", "fboss2011"),)
+        driver.async_get_route_table_details = AsyncMock(
+            return_value=[
+                _detail("2001:db8:ff01::/64", 0, resolved),
+                _detail("2001:db8:0:2::1/128", 800, resolved),
+            ]
+        )
+        task = RbbRecursiveRouteTask(logger=MagicMock())
+
+        with (
+            patch(f"{_MODULE}.async_get_device_driver", AsyncMock(return_value=driver)),
+            patch(
+                f"{_MODULE}._client_id",
+                side_effect={"BGPD": 0, "OPENR": 786, "TE_AGENT": 800}.get,
+            ),
+        ):
+            await task._verify(
+                "r1.example",
+                "2001:db8:ff01::/64",
+                "2001:db8:0:2::1",
+                loopback_owner="TE_AGENT",
+            )
+
     async def test_install_writes_only_test_owned_network_and_restarts_bgp(self) -> None:
         driver = MagicMock()
         driver.async_run_cmd_on_shell = AsyncMock(return_value="0")

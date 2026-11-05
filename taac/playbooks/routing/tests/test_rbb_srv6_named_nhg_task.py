@@ -75,6 +75,12 @@ def _te_client_id():
     return int(getattr(ClientID.TE_AGENT, "value", ClientID.TE_AGENT))
 
 
+def _openr_client_id():
+    from neteng.fboss.ctrl.types import ClientID
+
+    return int(getattr(ClientID.OPENR, "value", ClientID.OPENR))
+
+
 def _route_detail(
     *,
     route=None,
@@ -182,6 +188,56 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
                 namedRouteDestination=None,
                 nextHops=[SimpleNamespace(address="bgpd-resolved")],
             ),
+        )
+
+    def test_programmed_fib_proves_te_agent_beats_openr(self) -> None:
+        from neteng.fboss.common.types import TunnelType
+
+        te_candidate = SimpleNamespace(
+            clientId=_te_client_id(),
+            namedRouteDestination=SimpleNamespace(nextHopGroup=_GROUP),
+            adminDistance=2,
+            isPreferred=True,
+        )
+        openr_candidate = SimpleNamespace(
+            clientId=_openr_client_id(),
+            namedRouteDestination=None,
+            adminDistance=10,
+            isPreferred=False,
+        )
+        member = _group(programmed=True).nexthops[0]
+        detail = SimpleNamespace(
+            dest=_dest(),
+            nextHopMulti=[te_candidate, openr_candidate],
+            nextHops=[member],
+            adminDistance=2,
+        )
+        fib_route = SimpleNamespace(dest=_dest(), nextHops=[member])
+        normalized_members = (
+            {
+                "address": ipaddress.IPv6Address("2001:db8:12::2"),
+                "interface": None,
+                "weight": 1,
+                "srv6_segments": (
+                    ipaddress.IPv6Address("fdad:ffff:27d6:7fff::"),
+                ),
+                "tunnel_id": "srv6_tunnel",
+            },
+        )
+
+        RbbSrv6NamedNhgTask._assert_programmed_fib(
+            _HOST,
+            [detail],
+            ipaddress.ip_network(_PREFIX),
+            _GROUP,
+            "TE_AGENT",
+            _te_client_id(),
+            "OPENR",
+            _openr_client_id(),
+            2,
+            fib_route,
+            normalized_members,
+            TunnelType.SRV6_ENCAP,
         )
 
     async def test_validation_finishes_before_device_contact(self) -> None:

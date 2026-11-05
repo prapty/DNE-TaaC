@@ -6,6 +6,10 @@ The three profiles intentionally share one device-only control-plane contract:
 
 * TC-02 programs a named NHG, adds a route that references it, and verifies
   exact SRv6 NHE, RIB, and resolved agent-FIB state.
+* TC-03 overlays the OpenR-learned remote loopback with a better-distance
+  TE_AGENT route through the named NHG and verifies recursive service-prefix
+  resolution through the new winner.
+* TC-04 binds the load-bearing prefix directly to the named SRv6 NHG.
 * TC-06 installs the route before its NHG and verifies the TE_AGENT candidate
   is retained in the client RIB without resolved per-client next hops.
 * TC-07 independently recreates that forward reference, adds the missing NHG,
@@ -39,6 +43,8 @@ class RbbNamedNhgAction(enum.Enum):
     """The independently reported lifecycle exercised by one playbook."""
 
     PROGRAM_AND_VERIFY = "program_and_verify"
+    ADMIN_DISTANCE_OVERRIDE = "admin_distance_override"
+    BIND_SERVICE_PREFIX = "bind_service_prefix"
     FORWARD_REFERENCE = "forward_reference"
     RESOLVE_FORWARD_REFERENCE = "resolve_forward_reference"
 
@@ -107,6 +113,7 @@ class RbbNamedNhgProfile:
     route_prefix: str
     members: tuple[RbbNamedNhgMember, ...]
     client: str = C.ROUTE_OWNER_TE_AGENT
+    competing_client: str | None = None
     requires_forward_reference_support: bool = False
     unmet_requirements: tuple[str, ...] = ()
 
@@ -137,6 +144,18 @@ class RbbNamedNhgProfile:
             raise ValueError("named-NHG profile contains duplicate NHEs")
         if self.client != C.ROUTE_OWNER_TE_AGENT:
             raise ValueError("named-NHG lifecycle is restricted to TE_AGENT")
+        needs_competing_client = (
+            self.action is RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE
+        )
+        if needs_competing_client:
+            if self.competing_client != "OPENR":
+                raise ValueError(
+                    "admin-distance override requires OPENR as competing_client"
+                )
+        elif self.competing_client is not None:
+            raise ValueError(
+                "competing_client is only valid for admin-distance override"
+            )
         if self.coverage is RbbNamedNhgCoverage.PARTIAL:
             if not self.unmet_requirements:
                 raise ValueError("partial named-NHG profiles must explain their gap")
@@ -157,6 +176,8 @@ class RbbNamedNhgProfile:
             "route_prefix": self.route_prefix,
             "client": self.client,
         }
+        if self.competing_client is not None:
+            params["competing_client"] = self.competing_client
         if include_members:
             params["members"] = [member.to_params() for member in self.members]
         return params
@@ -164,11 +185,15 @@ class RbbNamedNhgProfile:
 
 NAMED_NHG_SUITE_TESTPLAN_IDS: tuple[str, ...] = (
     "phase2:TC-02",
+    "phase2:TC-03",
+    "phase2:TC-04",
     "phase2:TC-06",
     "phase2:TC-07",
 )
 
 _TC02_GROUP = "taac-rbb-p2-tc02"
+_TC03_GROUP = "taac-rbb-p2-tc03"
+_TC04_GROUP = "taac-rbb-p2-tc04"
 _FORWARD_REFERENCE_GROUP = "taac-rbb-p2-forward-ref"
 
 
@@ -235,13 +260,12 @@ def build_rbb_named_nhg_profiles(
     topology: RbbTopology,
     srv6_profile: Srv6Profile = SRV6_3_USIDS_PROFILE,
 ) -> tuple[RbbNamedNhgProfile, ...]:
-    """Build the dependency-ordered TC-02, TC-06, and TC-07 catalog."""
+    """Build the dependency-ordered TC-02/03/04/06/07 catalog."""
     validate_rbb_topology(topology, require_ixia=False)
     members = _members(topology, srv6_profile)
     test_route_prefix = _test_route_prefix(srv6_profile)
     common = {
         "coverage": RbbNamedNhgCoverage.PARTIAL,
-        "route_prefix": str(test_route_prefix),
         "members": members,
     }
     return (
@@ -251,10 +275,38 @@ def build_rbb_named_nhg_profiles(
             title="Program and verify a named SRv6 NHG with SID-list NHEs",
             action=RbbNamedNhgAction.PROGRAM_AND_VERIFY,
             group_name=_TC02_GROUP,
+            route_prefix=str(test_route_prefix),
             unmet_requirements=(
                 "the device-only suite does not generate data-plane traffic or "
                 "independently query ASIC objects; it verifies exact NHG/NHE "
                 "readback plus agent RIB/FIB state",
+            ),
+            **common,
+        ),
+        RbbNamedNhgProfile(
+            testplan_id="phase2:TC-03",
+            playbook_name="rbb_p2_tc03_loopback_admin_distance",
+            title="Prefer a loopback-to-SRv6-NHG route by admin distance",
+            action=RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE,
+            group_name=_TC03_GROUP,
+            route_prefix=f"{C.R2_LOOPBACK_V6}/128",
+            competing_client="OPENR",
+            unmet_requirements=(
+                "agent RIB/FIB and recursive resolution are verified, but the "
+                "device-only suite does not independently query ASIC objects",
+            ),
+            **common,
+        ),
+        RbbNamedNhgProfile(
+            testplan_id="phase2:TC-04",
+            playbook_name="rbb_p2_tc04_service_prefix_srv6_nhg",
+            title="Bind the load-bearing prefix to the named SRv6 NHG",
+            action=RbbNamedNhgAction.BIND_SERVICE_PREFIX,
+            group_name=_TC04_GROUP,
+            route_prefix=C.RECURSIVE_ROUTE_TEST_PREFIX,
+            unmet_requirements=(
+                "exact RIB/FIB resolution is verified, but data-plane forwarding "
+                "and independent ASIC readback require the traffic batch",
             ),
             **common,
         ),
@@ -264,6 +316,7 @@ def build_rbb_named_nhg_profiles(
             title="Retain an unresolved named-NHG route in RIB only",
             action=RbbNamedNhgAction.FORWARD_REFERENCE,
             group_name=_FORWARD_REFERENCE_GROUP,
+            route_prefix=str(test_route_prefix),
             requires_forward_reference_support=True,
             unmet_requirements=(
                 "the lifecycle uses one isolated configured test prefix and does not "
@@ -279,6 +332,7 @@ def build_rbb_named_nhg_profiles(
             title="Resolve a forward-reference route into the agent FIB",
             action=RbbNamedNhgAction.RESOLVE_FORWARD_REFERENCE,
             group_name=_FORWARD_REFERENCE_GROUP,
+            route_prefix=str(test_route_prefix),
             requires_forward_reference_support=True,
             unmet_requirements=(
                 "the lifecycle validates one isolated configured test prefix "

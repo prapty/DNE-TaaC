@@ -49,13 +49,15 @@ class RbbNamedNhgProfilesTest(unittest.TestCase):
             tuple(profile.action for profile in profiles),
             (
                 RbbNamedNhgAction.PROGRAM_AND_VERIFY,
+                RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE,
+                RbbNamedNhgAction.BIND_SERVICE_PREFIX,
                 RbbNamedNhgAction.FORWARD_REFERENCE,
                 RbbNamedNhgAction.RESOLVE_FORWARD_REFERENCE,
             ),
         )
         self.assertFalse(profiles[0].requires_forward_reference_support)
-        self.assertTrue(profiles[1].requires_forward_reference_support)
-        self.assertTrue(profiles[2].requires_forward_reference_support)
+        self.assertTrue(profiles[3].requires_forward_reference_support)
+        self.assertTrue(profiles[4].requires_forward_reference_support)
 
     def test_members_derive_from_declared_core_plan_and_existing_srv6_plan(
         self,
@@ -92,7 +94,7 @@ class RbbNamedNhgProfilesTest(unittest.TestCase):
     def test_forward_reference_cases_share_name_and_route_but_tc02_is_isolated(
         self,
     ) -> None:
-        tc02, tc06, tc07 = build_rbb_named_nhg_profiles(_topology())
+        tc02, tc03, tc04, tc06, tc07 = build_rbb_named_nhg_profiles(_topology())
 
         self.assertNotEqual(tc02.group_name, tc06.group_name)
         self.assertEqual(tc06.group_name, tc07.group_name)
@@ -100,9 +102,16 @@ class RbbNamedNhgProfilesTest(unittest.TestCase):
             {profile.route_prefix for profile in (tc02, tc06, tc07)},
             {C.NAMED_NHG_TEST_PREFIX},
         )
+        self.assertEqual(tc03.route_prefix, f"{C.R2_LOOPBACK_V6}/128")
+        self.assertEqual(tc03.competing_client, "OPENR")
+        self.assertEqual(tc04.route_prefix, C.RECURSIVE_ROUTE_TEST_PREFIX)
+        self.assertIsNone(tc04.competing_client)
         self.assertNotEqual(tc02.route_prefix, C.TAIL_DEST_PREFIX)
         self.assertTrue(
-            all(len(profile.group_name) <= 31 for profile in (tc02, tc06, tc07))
+            all(
+                len(profile.group_name) <= 31
+                for profile in (tc02, tc03, tc04, tc06, tc07)
+            )
         )
 
     def test_selector_reorders_to_catalog_and_rejects_bad_requests(self) -> None:

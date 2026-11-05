@@ -409,7 +409,7 @@ with `--suite`:
 | --- | --- | --- |
 | `base` | Original three-uSID steering and route-owner lifecycle | Optional |
 | `state-audit` | Default full read-only common audits: OpenR route ownership/reachability and per-core NDP resolution | None |
-| `named-nhg-lifecycle` | Full Phase 2 TC-01 recursive iBGP/OpenR resolution, partial TC-02 named SRv6 NHG/NHE programming, and partial TC-06/07 forward-reference lifecycle where FBOSS supports it | None |
+| `named-nhg-lifecycle` | Full Phase 2 TC-01 recursive iBGP/OpenR resolution; partial TC-02/03/04 named SRv6 NHG, admin-distance, and service-prefix lifecycle; partial TC-06/07 forward-reference lifecycle where FBOSS supports it | None |
 | `traffic-foundation` | Phase 1 TC-05/06/07/13/14/17: bidirectional route propagation, throughput/loss, and IXIA-to-DUT counter correlation | Required |
 | `core-ecmp` | Phase 1 adapted TC-02 and full TC-03/08: reversible Open/R path selection, equal-cost RIB/FIB, and traffic on every declared core path | Required; RESTPy/TaacIxia for TC-08 |
 | `dual-stack-traffic` | Phase 1 TC-11/12 and partial TC-15: IPv4 forwarding plus concurrent bidirectional IPv4/IPv6 throughput and loss | Required |
@@ -440,9 +440,15 @@ The named-NHG cases use structured FBOSS Thrift for both mutations and exact
 readback. TC-02 creates an adopter-neutral named SRv6
 NHG, references it from a temporary TE_AGENT route, and verifies its NHE
 address, segment list, tunnel, RIB reference, and FIB programming before
-deleting the route and then the NHG. The three named-NHG cases use the isolated
+deleting the route and then the NHG. TC-02/06/07 use the isolated
 `TAAC_RBB_NAMED_NHG_TEST_PREFIX`; preflight rejects overlap with the active
-service prefix or SRv6 locator. TC-06 and TC-07 preserve the source test plan's
+service prefix or SRv6 locator. TC-03 independently recreates TC-01's temporary
+BGP service-prefix route, then installs a better-admin-distance TE_AGENT route
+for the OpenR-learned remote loopback through an SRv6 NHG. It verifies both
+RIB candidates, the TE_AGENT winner, exact SRv6 FIB members, and recursive
+service-prefix resolution before restoring both lifecycles. TC-04 binds the
+temporary load-bearing prefix directly to an SRv6 NHG and verifies its exact
+RIB and resolved agent-FIB state. TC-06 and TC-07 preserve the source test plan's
 stricter forward-reference contract: a route that names a not-yet-created NHG
 must remain as an unresolved TE_AGENT RIB candidate, then resolve into the
 agent FIB after the NHG is added. A resolved route from another client for the
@@ -451,11 +457,12 @@ versions that atomically reject a missing-NHG route report those cases as
 explicitly unsupported and SKIPPED; rejection is never accepted as a false
 TC-06/07 pass.
 This device-only batch verifies exact structured API and resolved agent-FIB
-state. It does not independently query ASIC objects or generate traffic, so the
-profiles are explicitly labeled PARTIAL rather than claiming full source-plan
-coverage. The suite mutates R1 route/NHG state and should run only on an
-exclusive testbed; collision guards and cleanup prevent adoption or deletion
-of pre-existing operator-owned objects.
+state. TC-03 and TC-04 do not independently query ASIC objects or generate
+traffic, so their profiles are explicitly labeled PARTIAL rather than claiming
+full source-plan coverage. The suite mutates R1 route/NHG state; TC-01 and
+TC-03 also temporarily update R2 BGP configuration. Run it only on an exclusive
+testbed. Collision guards and cleanup prevent adoption or deletion of
+pre-existing operator-owned objects.
 
 The traffic-foundation rate check defaults to a 400-Gbps edge running at 10%
 line rate. Set `TAAC_RBB_EDGE_BANDWIDTH_GBPS` and

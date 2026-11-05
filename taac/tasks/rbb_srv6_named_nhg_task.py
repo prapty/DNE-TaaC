@@ -59,6 +59,7 @@ _ALLOWED_PARAMS = frozenset(
         "group_name",
         "route_prefix",
         "client",
+        "competing_client",
         "admin_distance",
         "members",
         "expected_programmed",
@@ -188,6 +189,11 @@ def _normalize_params(
 
     route_prefix = _normalize_ipv6_network(params.get("route_prefix"), "route_prefix")
     client = _enum_name(params.get("client", _DEFAULT_CLIENT), "client")
+    competing_client = (
+        _enum_name(params["competing_client"], "competing_client")
+        if params.get("competing_client") is not None
+        else None
+    )
     admin_distance = _enum_name(
         params.get("admin_distance", _DEFAULT_ADMIN_DISTANCE), "admin_distance"
     )
@@ -195,6 +201,8 @@ def _normalize_params(
         raise ValueError(
             "rbb_srv6_named_nhg is restricted to the TE_AGENT route client"
         )
+    if competing_client not in {None, "OPENR"}:
+        raise ValueError("competing_client must be OPENR when supplied")
     if admin_distance != _DEFAULT_ADMIN_DISTANCE:
         raise ValueError(
             "rbb_srv6_named_nhg is restricted to the TE_AGENT admin distance"
@@ -216,6 +224,7 @@ def _normalize_params(
         "group_name": group_name,
         "route_prefix": route_prefix,
         "client": client,
+        "competing_client": competing_client,
         "admin_distance": admin_distance,
         "members": members,
         "expected_programmed": expected_programmed,
@@ -396,6 +405,17 @@ class RbbSrv6NamedNhgTask(BaseTask):
             raise ValueError(
                 f"unknown FBOSS ClientID {normalized['client']!r}"
             ) from exc
+        competing_client_id = None
+        if normalized["competing_client"] is not None:
+            try:
+                competing_client_id = _enum_int(
+                    getattr(ClientID, normalized["competing_client"])
+                )
+            except AttributeError as exc:
+                raise ValueError(
+                    "unknown FBOSS ClientID "
+                    f"{normalized['competing_client']!r}"
+                ) from exc
         try:
             admin_distance = getattr(AdminDistance, normalized["admin_distance"])
         except AttributeError as exc:
@@ -408,6 +428,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
             driver,
             normalized,
             client_id=_enum_int(client_member),
+            competing_client_id=competing_client_id,
             admin_distance=admin_distance,
         )
 
@@ -639,12 +660,14 @@ class RbbSrv6NamedNhgTask(BaseTask):
         group_name: str,
         client: str,
         client_id: int,
+        competing_client: str | None,
+        competing_client_id: int | None,
         admin_distance: t.Any,
         fib_route: t.Any | None,
         members: t.Sequence[t.Mapping[str, t.Any]],
         tunnel_type: t.Any,
     ) -> None:
-        RbbSrv6NamedNhgTask._assert_client_candidate(
+        winner = RbbSrv6NamedNhgTask._assert_client_candidate(
             hostname,
             details,
             route_prefix,
@@ -653,6 +676,40 @@ class RbbSrv6NamedNhgTask(BaseTask):
             client_id,
             admin_distance,
         )
+        if competing_client_id is not None:
+            competitors = [
+                candidate
+                for detail in details
+                for candidate in (getattr(detail, "nextHopMulti", None) or ())
+                if getattr(candidate, "clientId", None) is not None
+                and int(candidate.clientId) == competing_client_id
+            ]
+            if len(competitors) != 1:
+                raise TestCaseFailure(
+                    f"{hostname}: expected exactly one {competing_client} "
+                    f"candidate for {route_prefix.with_prefixlen}, found "
+                    f"{len(competitors)}"
+                )
+            loser = competitors[0]
+            winner_distance = getattr(winner, "adminDistance", None)
+            loser_distance = getattr(loser, "adminDistance", None)
+            if loser_distance is None or _enum_int(winner_distance) >= _enum_int(
+                loser_distance
+            ):
+                raise TestCaseFailure(
+                    f"{hostname}: {client} does not have a better admin distance "
+                    f"than {competing_client} for {route_prefix.with_prefixlen}; "
+                    f"winner={winner_distance!r}, competitor={loser_distance!r}"
+                )
+            if competing_client_id in {
+                owner
+                for detail in details
+                for owner in _preferred_fib_client_ids(detail)
+            }:
+                raise TestCaseFailure(
+                    f"{hostname}: {competing_client} unexpectedly remains "
+                    f"preferred for {route_prefix.with_prefixlen}"
+                )
         if not any(
             client_id in _preferred_fib_client_ids(detail) for detail in details
         ):
@@ -707,6 +764,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
         params: t.Mapping[str, t.Any],
         *,
         client_id: int,
+        competing_client_id: int | None,
         admin_distance: t.Any,
     ) -> None:
         from facebook.network.Address.types import BinaryAddress
@@ -724,6 +782,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
         group_name = params["group_name"]
         route_prefix = params["route_prefix"]
         client = params["client"]
+        competing_client = params["competing_client"]
         members = params["members"]
         expected_programmed = params["expected_programmed"]
         group_key = self._group_key(hostname, group_name)
@@ -1043,6 +1102,8 @@ class RbbSrv6NamedNhgTask(BaseTask):
                     group_name,
                     client,
                     client_id,
+                    competing_client,
+                    competing_client_id,
                     admin_distance,
                     await self._fib_route(agent, route_prefix),
                     expected_members,

@@ -10,6 +10,7 @@ from taac.playbooks.routing.factories.qual_rbb.rbb_named_nhg_playbook import (
 )
 from taac.test_as_a_config import types as taac_types
 from taac.testconfigs.routing.util.bgp_rbb_named_nhg_profiles import (
+    RbbNamedNhgAction,
     build_rbb_named_nhg_profiles,
 )
 from taac.testconfigs.routing.util.bgp_rbb_topology import (
@@ -72,7 +73,7 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
 
     def test_tc06_requires_exact_rib_only_forward_reference(self) -> None:
         playbook = create_rbb_named_nhg_playbook(
-            self.profiles[1], r1_hostname="r1.example"
+            self.profiles[3], r1_hostname="r1.example"
         )
         tasks = _stage_tasks(playbook)
 
@@ -85,7 +86,7 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
 
     def test_tc07_recreates_forward_reference_before_adding_group(self) -> None:
         playbook = create_rbb_named_nhg_playbook(
-            self.profiles[2], r1_hostname="r1.example"
+            self.profiles[4], r1_hostname="r1.example"
         )
         tasks = _stage_tasks(playbook)
 
@@ -105,15 +106,89 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
         self.assertIn("members", tasks[4][1])
         self.assertIn("SKIP", playbook.description)
 
+    def test_tc03_reuses_recursive_route_and_proves_owner_transition(self) -> None:
+        playbook = create_rbb_named_nhg_playbook(
+            self.profiles[1],
+            r1_hostname="r1.example",
+            r2_hostname="r2.example",
+        )
+        tasks = _stage_tasks(playbook)
+
+        self.assertEqual(
+            [(name, params["action"]) for name, params in tasks],
+            [
+                ("rbb_recursive_route", "precheck"),
+                ("rbb_srv6_named_nhg", "precheck"),
+                ("rbb_recursive_route", "install"),
+                ("rbb_recursive_route", "verify"),
+                ("rbb_srv6_named_nhg", "program_nhg"),
+                ("rbb_srv6_named_nhg", "program_route"),
+                ("rbb_srv6_named_nhg", "verify_nhg"),
+                ("rbb_srv6_named_nhg", "verify_programmed"),
+                ("rbb_recursive_route", "verify"),
+                ("rbb_srv6_named_nhg", "cleanup"),
+                ("rbb_recursive_route", "verify"),
+                ("rbb_recursive_route", "cleanup"),
+            ],
+        )
+        recursive_verifies = [
+            params
+            for name, params in tasks
+            if name == "rbb_recursive_route" and params["action"] == "verify"
+        ]
+        self.assertEqual(
+            [params["loopback_owner"] for params in recursive_verifies],
+            ["OPENR", "TE_AGENT", "OPENR"],
+        )
+        named_verify = next(
+            params
+            for name, params in tasks
+            if name == "rbb_srv6_named_nhg"
+            and params["action"] == "verify_programmed"
+        )
+        self.assertEqual(named_verify["competing_client"], "OPENR")
+        self.assertEqual(len(playbook.cleanup_steps), 2)
+
+    def test_tc04_binds_service_prefix_with_existing_named_nhg_lifecycle(self) -> None:
+        playbook = create_rbb_named_nhg_playbook(
+            self.profiles[2], r1_hostname="r1.example"
+        )
+        tasks = _stage_tasks(playbook)
+
+        self.assertEqual(
+            [params["action"] for _, params in tasks],
+            [
+                "precheck",
+                "program_nhg",
+                "verify_nhg",
+                "program_route",
+                "verify_nhg",
+                "verify_programmed",
+            ],
+        )
+        self.assertTrue(
+            all(
+                params["route_prefix"] == self.profiles[2].route_prefix
+                for _, params in tasks
+            )
+        )
+
     def test_every_playbook_is_device_only_and_has_owned_cleanup(self) -> None:
         for profile in self.profiles:
             with self.subTest(profile=profile.testplan_id):
                 playbook = create_rbb_named_nhg_playbook(
-                    profile, r1_hostname="r1.example"
+                    profile,
+                    r1_hostname="r1.example",
+                    r2_hostname="r2.example",
                 )
                 self.assertIsNone(playbook.traffic_items_to_start)
                 self.assertEqual(playbook.device_regexes, ["^r1\\.example$"])
-                self.assertEqual(len(playbook.cleanup_steps), 1)
+                expected_cleanup_steps = (
+                    2
+                    if profile.action is RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE
+                    else 1
+                )
+                self.assertEqual(len(playbook.cleanup_steps), expected_cleanup_steps)
                 name, params = _payload(playbook.cleanup_steps[0])
                 self.assertEqual(name, "rbb_srv6_named_nhg")
                 self.assertEqual(params["action"], "cleanup")

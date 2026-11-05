@@ -1,11 +1,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # pyre-unsafe
-"""Reversible Phase-2 TC-01 recursive iBGP route lifecycle.
+"""Reversible Phase-2 recursive iBGP route lifecycle.
 
 The task originates one test-owned IPv6 service prefix on R2 with R2's
 loopback as its explicit iBGP next hop.  On R1 it proves that the service
-prefix is BGPD-owned, that the loopback is OPENR-owned, and that both FIB
-entries resolve to the same non-empty underlay next-hop set.  Cleanup restores
+prefix is BGPD-owned, that the loopback is learned by OPENR, and that both FIB
+entries resolve to the same non-empty underlay next-hop set. TC-03 can require
+the loopback's preferred FIB owner to transition to TE_AGENT. Cleanup restores
 the exact pre-run bgp.json and verifies that the service route is withdrawn.
 """
 
@@ -95,7 +96,7 @@ def _fib_detail(
 
 
 class RbbRecursiveRouteTask(BaseTask):
-    """Install, verify, and remove the TC-01 test-owned BGP route."""
+    """Install, verify, and remove a test-owned recursive BGP route."""
 
     # pyrefly: ignore [bad-override-mutable-attribute]
     NAME: str = "rbb_recursive_route"
@@ -117,6 +118,7 @@ class RbbRecursiveRouteTask(BaseTask):
             "tail_hostname",
             "route_prefix",
             "recursive_next_hop",
+            "loopback_owner",
             "timeout_seconds",
             "poll_interval_seconds",
         }
@@ -136,6 +138,9 @@ class RbbRecursiveRouteTask(BaseTask):
             raise ValueError("distinct head_hostname and tail_hostname are required")
         prefix = _network(params.get("route_prefix")).with_prefixlen
         next_hop = str(_address(params.get("recursive_next_hop")))
+        loopback_owner = str(params.get("loopback_owner", "OPENR")).strip().upper()
+        if loopback_owner not in {"OPENR", "TE_AGENT"}:
+            raise ValueError("loopback_owner must be OPENR or TE_AGENT")
         timeout = self._finite_number(params.get("timeout_seconds", 60), "timeout")
         interval = self._finite_number(
             params.get("poll_interval_seconds", 2), "poll interval"
@@ -149,7 +154,11 @@ class RbbRecursiveRouteTask(BaseTask):
             await self._install(tail, prefix, next_hop)
         elif action == _VERIFY:
             await self._poll(
-                lambda: self._verify(head, prefix, next_hop), timeout, interval
+                lambda: self._verify(
+                    head, prefix, next_hop, loopback_owner=loopback_owner
+                ),
+                timeout,
+                interval,
             )
         else:
             await self._cleanup(head, tail, prefix, timeout, interval)
@@ -212,7 +221,7 @@ class RbbRecursiveRouteTask(BaseTask):
         driver = await async_get_device_driver(tail)
         uid = str(await driver.async_run_cmd_on_shell("id -u") or "").strip()
         if uid != "0":
-            raise TestCaseFailure(f"{tail}: TC-01 install requires root SSH")
+            raise TestCaseFailure(f"{tail}: recursive-route install requires root SSH")
         raw = await async_read_file_or_none(driver, C.BGP_CONFIG_PATH)
         if not raw:
             raise TestCaseFailure(f"{tail}: missing {C.BGP_CONFIG_PATH}")
@@ -269,17 +278,26 @@ class RbbRecursiveRouteTask(BaseTask):
                 await driver.async_restart_service(FbossSystemctlServiceName.BGP)
             except Exception as rollback_exc:  # noqa: BLE001
                 raise TestCaseFailure(
-                    f"{tail}: TC-01 install failed ({exc}); rollback also failed "
+                    f"{tail}: recursive-route install failed ({exc}); "
+                    "rollback also failed "
                     f"({rollback_exc})"
                 ) from exc
             raise TestCaseFailure(
-                f"{tail}: TC-01 install failed and was rolled back: {exc}"
+                f"{tail}: recursive-route install failed and was rolled back: {exc}"
             ) from exc
 
-    async def _verify(self, head: str, prefix: str, next_hop: str) -> None:
+    async def _verify(
+        self,
+        head: str,
+        prefix: str,
+        next_hop: str,
+        *,
+        loopback_owner: str = "OPENR",
+    ) -> None:
         driver = await async_get_device_driver(head)
         bgpd_id = _client_id("BGPD")
         openr_id = _client_id("OPENR")
+        loopback_owner_id = _client_id(loopback_owner)
         loopback_prefix = f"{next_hop}/128"
         bgpd_routes = list(await driver.async_get_route_table_by_client(bgpd_id))
         openr_routes = list(await driver.async_get_route_table_by_client(openr_id))
@@ -299,7 +317,7 @@ class RbbRecursiveRouteTask(BaseTask):
 
         details = list(await driver.async_get_route_table_details())
         service_fib = _fib_detail(details, prefix, bgpd_id)
-        loopback_fib = _fib_detail(details, loopback_prefix, openr_id)
+        loopback_fib = _fib_detail(details, loopback_prefix, loopback_owner_id)
         service_entries, _, _ = _resolved_next_hops(service_fib)
         loopback_entries, _, _ = _resolved_next_hops(loopback_fib)
         service_set = set(service_entries)
@@ -311,7 +329,8 @@ class RbbRecursiveRouteTask(BaseTask):
                 f"loopback={sorted(loopback_set)}"
             )
         self.logger.info(
-            f"{head} -- [phase2:TC-01] recursive BGPD/OpenR resolution passed"
+            f"{head} -- recursive BGPD resolution through {loopback_owner} "
+            "loopback FIB passed"
         )
 
     async def _assert_absent(self, head: str, prefix: str) -> None:
@@ -350,7 +369,7 @@ class RbbRecursiveRouteTask(BaseTask):
             self._data[ownership_key] = False
         else:
             self.logger.info(
-                f"{tail} -- TC-01 cleanup found no task-owned BGP snapshot"
+                f"{tail} -- recursive-route cleanup found no task-owned BGP snapshot"
             )
 
 

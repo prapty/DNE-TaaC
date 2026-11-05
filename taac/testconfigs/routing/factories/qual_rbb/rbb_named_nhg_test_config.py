@@ -38,7 +38,7 @@ def create_rbb_named_nhg_test_config(
     name: str = "RBB_NAMED_NHG_LIFECYCLE_TEST",
     testplan_ids: t.Iterable[str] | None = None,
 ) -> TestConfig:
-    """Build the device-only TC-01/02/06/07 route lifecycle suite.
+    """Build the device-only TC-01/02/03/04/06/07 route lifecycle suite.
 
     The suite reuses the two-DUT topology and optional transactional bootstrap,
     but never reserves IXIA. Each playbook owns and removes its TE_AGENT route
@@ -86,7 +86,11 @@ def create_rbb_named_nhg_test_config(
                 else []
             ),
             *[
-                create_rbb_named_nhg_playbook(profile, r1_hostname=r1.device_name)
+                create_rbb_named_nhg_playbook(
+                    profile,
+                    r1_hostname=r1.device_name,
+                    r2_hostname=r2.device_name,
+                )
                 for profile in selected
             ],
         ],
