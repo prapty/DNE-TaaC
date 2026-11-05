@@ -445,6 +445,36 @@ class RbbSrv6CounterDeltaTaskTest(unittest.IsolatedAsyncioTestCase):
                 {"hostname": "rbb-r1", "action": "assert", **spec}
             )
 
+    async def test_assert_rejects_background_delta_against_reference(self) -> None:
+        shared = {
+            "rbb-r1:encap:delta": 1_000_000,
+            "rbb-r2:decap": 500,
+        }
+        task = RbbSrv6CounterDeltaTask(
+            hostname="rbb-r2", logger=MagicMock(), shared_data=shared
+        )
+        with (
+            patch(
+                _COUNTER_PATH,
+                new_callable=AsyncMock,
+                return_value=self._driver("out 526"),
+            ),
+            self.assertRaisesRegex(TestCaseFailure, "reference delta"),
+        ):
+            await task.run(
+                {
+                    "hostname": "rbb-r2",
+                    "action": "assert",
+                    "counter_cmd": "show port counters",
+                    "counter_regex": r"out\D*(\d+)",
+                    "direction": "decap",
+                    "min_delta": 1,
+                    "reference_hostname": "rbb-r1",
+                    "reference_direction": "encap",
+                    "min_reference_ratio": 0.1,
+                }
+            )
+
     async def test_snapshot_fails_when_regex_does_not_match(self) -> None:
         spec = {
             "counter_cmd": "show port counters",

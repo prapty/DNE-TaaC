@@ -16,6 +16,7 @@ import asyncio
 import ipaddress
 import json
 import math
+import re
 import time
 import typing as t
 
@@ -42,8 +43,9 @@ from taac.utils.oss_taac_lib_utils import ConsoleFileLogger
 _PRECHECK = "precheck"
 _INSTALL = "install"
 _VERIFY = "verify"
+_VERIFY_HW = "verify_hw"
 _CLEANUP = "cleanup"
-_ACTIONS = frozenset((_PRECHECK, _INSTALL, _VERIFY, _CLEANUP))
+_ACTIONS = frozenset((_PRECHECK, _INSTALL, _VERIFY, _VERIFY_HW, _CLEANUP))
 _BACKUP_SUFFIX = ".taac-rbb-recursive-orig"
 
 
@@ -161,12 +163,18 @@ class RbbRecursiveRouteTask(BaseTask):
                 baseline_route_expected=baseline_route_expected,
             )
         elif action == _INSTALL:
-            await self._install(tail, prefix, next_hop)
+            await self._install(head, tail, prefix, next_hop)
         elif action == _VERIFY:
             await self._poll(
                 lambda: self._verify(
                     head, prefix, next_hop, loopback_owner=loopback_owner
                 ),
+                timeout,
+                interval,
+            )
+        elif action == _VERIFY_HW:
+            await self._poll(
+                lambda: self._verify_hw(head, prefix, next_hop),
                 timeout,
                 interval,
             )
@@ -229,21 +237,19 @@ class RbbRecursiveRouteTask(BaseTask):
             not isinstance(item, dict) for item in networks
         ):
             raise TestCaseFailure(f"{tail}: bgp.json networks6 must be a list")
-        configured = {str(item.get("prefix")) for item in networks}
-        if prefix in configured:
+        if any(str(item.get("prefix")) == prefix for item in networks):
             raise TestCaseFailure(
                 f"{tail}: test prefix {prefix} already exists in bgp.json"
             )
-        if f"{next_hop}/128" not in configured:
-            raise TestCaseFailure(
-                f"{tail}: recursive loopback {next_hop}/128 is not originated"
-            )
+        await self._assert_loopback_baseline(head, tail, next_hop)
         if baseline_route_expected:
             await self._assert_bgpd_present(head, prefix)
         else:
             await self._assert_absent(head, prefix)
 
-    async def _install(self, tail: str, prefix: str, next_hop: str) -> None:
+    async def _install(
+        self, head: str, tail: str, prefix: str, next_hop: str
+    ) -> None:
         driver = await async_get_device_driver(tail)
         uid = str(await driver.async_run_cmd_on_shell("id -u") or "").strip()
         if uid != "0":
@@ -262,12 +268,7 @@ class RbbRecursiveRouteTask(BaseTask):
             raise TestCaseFailure(f"{tail}: bgp.json networks6 must be a list")
         if any(str(item.get("prefix")) == prefix for item in networks):
             raise TestCaseFailure(f"{tail}: refusing to overwrite existing {prefix}")
-        if not any(
-            str(item.get("prefix")) == f"{next_hop}/128" for item in networks
-        ):
-            raise TestCaseFailure(
-                f"{tail}: recursive loopback {next_hop}/128 is not originated"
-            )
+        await self._assert_loopback_baseline(head, tail, next_hop)
 
         await async_backup_before_overwrite(
             driver,
@@ -311,6 +312,67 @@ class RbbRecursiveRouteTask(BaseTask):
             raise TestCaseFailure(
                 f"{tail}: recursive-route install failed and was rolled back: {exc}"
             ) from exc
+
+    async def _assert_loopback_baseline(
+        self, head: str, tail: str, next_hop: str
+    ) -> None:
+        """Require the live recursive-loopback contract used by TC-01/TC-03.
+
+        The remote loopback is an interface route on the tail and an
+        OPENR-owned, resolved route on the head. It does not need to be
+        originated by BGPD: the test-owned service prefix is the only route
+        this task adds to ``networks6``.
+        """
+        loopback_prefix = f"{next_hop}/128"
+        tail_driver = await async_get_device_driver(tail)
+        tail_matches = _route_matches(
+            await tail_driver.async_get_route_table_details(), loopback_prefix
+        )
+        if len(tail_matches) != 1:
+            raise TestCaseFailure(
+                f"{tail}: expected one local loopback route {loopback_prefix}, "
+                f"observed {len(tail_matches)}"
+            )
+        tail_entries, tail_addresses, tail_interfaces = _resolved_next_hops(
+            tail_matches[0]
+        )
+        if (
+            not tail_entries
+            or tail_addresses != {next_hop}
+            or not tail_interfaces
+        ):
+            raise TestCaseFailure(
+                f"{tail}: {loopback_prefix} is not a resolved local interface "
+                f"route; next_hops={sorted(tail_addresses)} "
+                f"interfaces={sorted(tail_interfaces)}"
+            )
+
+        head_driver = await async_get_device_driver(head)
+        openr_id = _client_id("OPENR")
+        openr_matches = _route_matches(
+            await head_driver.async_get_route_table_by_client(openr_id),
+            loopback_prefix,
+        )
+        if len(openr_matches) != 1:
+            raise TestCaseFailure(
+                f"{head}: expected one OPENR loopback route {loopback_prefix}, "
+                f"observed {len(openr_matches)}"
+            )
+        openr_fib = _fib_detail(
+            await head_driver.async_get_route_table_details(),
+            loopback_prefix,
+            openr_id,
+        )
+        openr_entries, _, _ = _resolved_next_hops(openr_fib)
+        if not openr_entries:
+            raise TestCaseFailure(
+                f"{head}: OPENR loopback {loopback_prefix} has no resolved "
+                "forwarding next hops"
+            )
+        self.logger.info(
+            f"{tail} -- local {loopback_prefix}; {head} -- OPENR-owned "
+            "resolved loopback baseline passed"
+        )
 
     async def _verify(
         self,
@@ -357,6 +419,100 @@ class RbbRecursiveRouteTask(BaseTask):
         self.logger.info(
             f"{head} -- recursive BGPD resolution through {loopback_owner} "
             "loopback FIB passed"
+        )
+
+    @staticmethod
+    def _asic_route_next_hops(output: str) -> dict[str, int]:
+        """Return the SAI next-hop ID for every route-entry line."""
+        result: dict[str, int] = {}
+        for line in output.splitlines():
+            if "RouteEntry" not in line:
+                continue
+            prefix_match = re.search(r"prefix:\s*([^),]+)", line)
+            next_hop_match = re.search(r"NextHopId:\s*(\d+)", line)
+            if prefix_match and next_hop_match:
+                result[prefix_match.group(1).strip()] = int(next_hop_match.group(1))
+        return result
+
+    @staticmethod
+    def _asic_group_members(output: str) -> dict[int, set[int]]:
+        """Return SAI next-hop-group IDs mapped to their member next hops."""
+        result: dict[int, set[int]] = {}
+        for line in output.splitlines():
+            match = re.search(
+                r"NextHopGroupMemberSaiId\(\d+\).*?"
+                r"NextHopGroupId:\s*(\d+).*?NextHopId:\s*(\d+)",
+                line,
+            )
+            if match:
+                result.setdefault(int(match.group(1)), set()).add(
+                    int(match.group(2))
+                )
+        return result
+
+    async def _verify_hw(self, head: str, prefix: str, next_hop: str) -> None:
+        """Prove recursive flattening reached the ASIC, not only the agent FIB."""
+        driver = await async_get_device_driver(head)
+        route_output = (
+            await driver.async_run_cmd_on_shell(
+                "fboss2 show hw-object ROUTE_ENTRY uncached"
+            )
+            or ""
+        )
+        route_ids = self._asic_route_next_hops(route_output)
+        loopback_prefix = f"{next_hop}/128"
+        missing = [item for item in (prefix, loopback_prefix) if item not in route_ids]
+        if missing:
+            raise TestCaseFailure(
+                f"{head}: ASIC route dump is missing recursive route(s) {missing}"
+            )
+        service_id = route_ids[prefix]
+        loopback_id = route_ids[loopback_prefix]
+        if service_id != loopback_id:
+            raise TestCaseFailure(
+                f"{head}: ASIC recursive flattening mismatch: {prefix} uses "
+                f"NextHopId {service_id}, but {loopback_prefix} uses "
+                f"NextHopId {loopback_id}"
+            )
+
+        group_output = (
+            await driver.async_run_cmd_on_shell(
+                "fboss2 show hw-object NEXT_HOP_GROUP uncached"
+            )
+            or ""
+        )
+        members = self._asic_group_members(group_output).get(service_id, set())
+        if not members:
+            raise TestCaseFailure(
+                f"{head}: ASIC NextHopId {service_id} shared by {prefix} and "
+                f"{loopback_prefix} is not a populated next-hop group"
+            )
+
+        next_hop_output = (
+            await driver.async_run_cmd_on_shell(
+                "fboss2 show hw-object NEXT_HOP uncached"
+            )
+            or ""
+        )
+        missing_members = [
+            member
+            for member in sorted(members)
+            if not re.search(rf"NextHopSaiId\({member}\):", next_hop_output)
+        ]
+        if missing_members:
+            raise TestCaseFailure(
+                f"{head}: ASIC group {service_id} references absent next-hop "
+                f"objects {missing_members}"
+            )
+        selected_lines = [
+            line.strip()
+            for line in next_hop_output.splitlines()
+            if any(f"NextHopSaiId({member}):" in line for member in members)
+        ]
+        self.logger.info(
+            f"{head} -- ASIC recursive flattening passed: {prefix} and "
+            f"{loopback_prefix} -> NextHopGroup {service_id}, "
+            f"members={sorted(members)}, next_hops={selected_lines}"
         )
 
     async def _assert_absent(self, head: str, prefix: str) -> None:

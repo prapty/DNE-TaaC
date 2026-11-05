@@ -114,6 +114,9 @@ class RbbNamedNhgProfile:
     group_name: str
     route_prefix: str
     members: tuple[RbbNamedNhgMember, ...]
+    underlay_anchor_prefix: str | None = None
+    member_source_client: str | None = None
+    member_source_prefix: str | None = None
     client: str = C.ROUTE_OWNER_TE_AGENT
     competing_client: str | None = None
     requires_forward_reference_support: bool = False
@@ -136,6 +139,32 @@ class RbbNamedNhgProfile:
         if network.version != 6:
             raise ValueError("named-NHG lifecycle route must be IPv6")
         object.__setattr__(self, "route_prefix", str(network))
+        if self.underlay_anchor_prefix is not None:
+            anchor = ipaddress.ip_network(
+                self.underlay_anchor_prefix, strict=True
+            )
+            if anchor.version != 6 or anchor.prefixlen != 128:
+                raise ValueError("named-NHG underlay anchor must be an IPv6 /128")
+            if anchor == network:
+                raise ValueError(
+                    "named-NHG underlay anchor must differ from the tested route"
+                )
+            object.__setattr__(self, "underlay_anchor_prefix", str(anchor))
+        if (self.member_source_client is None) != (
+            self.member_source_prefix is None
+        ):
+            raise ValueError(
+                "named-NHG member source client and prefix must be supplied together"
+            )
+        if self.member_source_client is not None:
+            if self.member_source_client not in {"OPENR", "BGPD"}:
+                raise ValueError("named-NHG member source must be OPENR or BGPD")
+            source_prefix = ipaddress.ip_network(
+                t.cast(str, self.member_source_prefix), strict=True
+            )
+            if source_prefix.version != 6:
+                raise ValueError("named-NHG member source prefix must be IPv6")
+            object.__setattr__(self, "member_source_prefix", str(source_prefix))
         if not self.members:
             raise ValueError("named-NHG profile requires at least one NHE")
         member_keys = {
@@ -180,6 +209,11 @@ class RbbNamedNhgProfile:
         }
         if self.competing_client is not None:
             params["competing_client"] = self.competing_client
+        if self.underlay_anchor_prefix is not None:
+            params["underlay_anchor_prefix"] = self.underlay_anchor_prefix
+        if self.member_source_client is not None:
+            params["member_source_client"] = self.member_source_client
+            params["member_source_prefix"] = self.member_source_prefix
         if include_members:
             params["members"] = [member.to_params() for member in self.members]
         return params
@@ -292,6 +326,8 @@ def build_rbb_named_nhg_profiles(
             group_name=_TC03_GROUP,
             route_prefix=f"{C.R2_LOOPBACK_V6}/128",
             competing_client="OPENR",
+            member_source_client="OPENR",
+            member_source_prefix=f"{C.R2_LOOPBACK_V6}/128",
             **common,
         ),
         RbbNamedNhgProfile(
@@ -301,7 +337,9 @@ def build_rbb_named_nhg_profiles(
             action=RbbNamedNhgAction.BIND_SERVICE_PREFIX,
             coverage=RbbNamedNhgCoverage.FULL,
             group_name=_TC04_GROUP,
-            route_prefix=C.RECURSIVE_ROUTE_TEST_PREFIX,
+            route_prefix=C.TAIL_DEST_PREFIX,
+            member_source_client="BGPD",
+            member_source_prefix=C.TAIL_DEST_PREFIX,
             **common,
         ),
         RbbNamedNhgProfile(

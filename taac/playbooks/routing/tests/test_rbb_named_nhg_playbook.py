@@ -9,6 +9,7 @@ from taac.playbooks.routing.factories.qual_rbb.rbb_named_nhg_playbook import (
     create_rbb_named_nhg_playbook,
 )
 from taac.test_as_a_config import types as taac_types
+from taac.testconfigs.routing.util import bgp_rbb_constants as C
 from taac.testconfigs.routing.util.bgp_rbb_named_nhg_profiles import (
     RbbNamedNhgAction,
     build_rbb_named_nhg_profiles,
@@ -125,16 +126,15 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
             [
                 ("rbb_recursive_route", "precheck"),
                 ("rbb_srv6_named_nhg", "precheck"),
-                ("rbb_recursive_route", "install"),
                 ("rbb_recursive_route", "verify"),
                 ("rbb_srv6_named_nhg", "program_nhg"),
                 ("rbb_srv6_named_nhg", "program_route"),
                 ("rbb_srv6_named_nhg", "verify_nhg"),
                 ("rbb_srv6_named_nhg", "verify_programmed"),
                 ("rbb_recursive_route", "verify"),
+                ("rbb_recursive_route", "verify_hw"),
                 ("rbb_srv6_named_nhg", "cleanup"),
                 ("rbb_recursive_route", "verify"),
-                ("rbb_recursive_route", "cleanup"),
             ],
         )
         recursive_verifies = [
@@ -145,6 +145,13 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
         self.assertEqual(
             [params["loopback_owner"] for params in recursive_verifies],
             ["OPENR", "TE_AGENT", "OPENR"],
+        )
+        self.assertTrue(
+            all(
+                params["route_prefix"] == C.TAIL_DEST_PREFIX
+                for name, params in tasks
+                if name == "rbb_recursive_route"
+            )
         )
         named_verify = next(
             params
@@ -160,10 +167,7 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
             for name, params in tasks
             if name == "rbb_srv6_counter_delta"
         ]
-        self.assertEqual(
-            counter_actions,
-            ["snapshot", "snapshot", "assert", "assert"],
-        )
+        self.assertEqual(counter_actions, [])
 
     def test_tc04_binds_service_prefix_with_existing_named_nhg_lifecycle(self) -> None:
         playbook = create_rbb_named_nhg_playbook(

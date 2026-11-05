@@ -239,7 +239,12 @@ def _ixia_port_configs(
     selected R2 edge advertises the one remote pool targeted by traffic.
     """
     advertised = ipaddress.ip_network(
-        traffic_route_prefix or C.IXIA_TAIL_ADVERTISED_PREFIX, strict=True
+        traffic_route_prefix
+        or (
+            f"{C.IXIA_TAIL_ADVERTISED_PREFIX}/"
+            f"{C.IXIA_TAIL_ADVERTISED_PREFIX_LEN}"
+        ),
+        strict=True,
     )
     advertised_count = (
         1
@@ -332,6 +337,7 @@ def _edge_ebgp_setup_tasks(
     r2: PhysicalInventory,
     topology: RbbTopology,
     include_traffic: bool,
+    traffic_ibgp_next_hop: str | None = None,
 ) -> list[taac_types.Task]:
     """OPT-IN DUT-side edge eBGP bring-up toward the IXIA edges (S14).
 
@@ -345,11 +351,11 @@ def _edge_ebgp_setup_tasks(
     incompatible here). The head (R1) gains an eBGP peer toward its selected
     IXIA edge. Both DUTs have their core iBGP v6 AFI enabled. R1 preserves its
     usable routed v6 next-hop (or uses the explicit environment override); the
-    tail (R2) advertises its learned pool with the decap SID. The latter supplies
-    R1's recursive underlay resolution; the S21 TE_AGENT route's explicit
-    segment list triggers SRv6 encapsulation. Each DUT also gets its selected
-    edge L3 RIF added to agent.conf when necessary. Every edit has an independent
-    snapshot and is reverted by teardown.
+    tail (R2) advertises its learned pool with the decap SID by default. A
+    scenario may instead select a routed loopback as the recursive next hop.
+    Each DUT also gets its selected edge L3 RIF added to agent.conf when
+    necessary. Every edit has an independent snapshot and is reverted by
+    teardown.
     """
     if not (C.EDGE_EBGP_ENABLED and include_traffic):
         return []
@@ -382,11 +388,11 @@ def _edge_ebgp_setup_tasks(
                 "edge_peer_addr": C.IXIA_R2_EDGE_V6,
                 "edge_remote_as": C.IXIA_R2_EDGE_AS,
                 "edge_local_addr": C.IXIA_R2_EDGE_GW_V6,
-                # Tail: enable the iBGP v6 AFI and advertise the decap SID as
-                # the recursive next hop used by the head's TE_AGENT route.
+                # Tail: enable the iBGP v6 AFI and advertise the scenario's
+                # recursive next hop (the decap SID remains the default).
                 "enable_ipv6_afi": True,
                 "ibgp_peer_addr": C.R1_ROUTER_ID,
-                "ibgp_srv6_nexthop": C.SRV6_DECAP_SID,
+                "ibgp_srv6_nexthop": traffic_ibgp_next_hop or C.SRV6_DECAP_SID,
                 # A retained device-only bootstrap locally originates the test
                 # tail route and disables next-hop-self to preserve its decap
                 # SID. Traffic mode instead learns the route from IXIA. Reconcile
@@ -492,6 +498,7 @@ def _build_rbb_test_config(
     include_traffic: bool,
     traffic_route_prefix: str | None = None,
     traffic_item_name: str = C.TRAFFIC_ITEM_R1_TO_R2,
+    traffic_ibgp_next_hop: str | None = None,
 ) -> TestConfig:
     _validate_traffic_route_contract(
         profile, include_traffic, traffic_route_prefix=traffic_route_prefix
@@ -556,7 +563,13 @@ def _build_rbb_test_config(
         startup_checks=[],
         setup_tasks=(
             _dut_bootstrap_setup_tasks(r1, r2, topology, include_traffic)
-            + _edge_ebgp_setup_tasks(r1, r2, topology, include_traffic)
+            + _edge_ebgp_setup_tasks(
+                r1,
+                r2,
+                topology,
+                include_traffic,
+                traffic_ibgp_next_hop=traffic_ibgp_next_hop,
+            )
         ),
         # Teardown runs in list order. Remove the edge overlay before restoring
         # the bootstrap's image baseline underneath it.

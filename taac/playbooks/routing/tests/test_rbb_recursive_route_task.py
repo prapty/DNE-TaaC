@@ -43,6 +43,47 @@ class RbbRecursiveRouteTaskTest(unittest.IsolatedAsyncioTestCase):
     def test_task_is_registered(self) -> None:
         self.assertIs(TASK_NAME_TO_CLASS["rbb_recursive_route"], RbbRecursiveRouteTask)
 
+    def test_asic_parsers_extract_route_and_group_members(self) -> None:
+        routes = (
+            "RouteEntry(switchId: 1, prefix: 2001:db8:ff01::/64): "
+            "(NextHopId: 42, Metadata: 0)\n"
+            "RouteEntry(switchId: 1, prefix: 2001:db8::1/128): "
+            "(NextHopId: 42, Metadata: 0)"
+        )
+        groups = (
+            "NextHopGroupSaiId(42): (...)\n"
+            "NextHopGroupMemberSaiId(100): (NextHopGroupId: 42, "
+            "NextHopId: 51, Weight: 1)\n"
+            "NextHopGroupMemberSaiId(101): (NextHopGroupId: 42, "
+            "NextHopId: 52, Weight: 1)"
+        )
+        self.assertEqual(
+            RbbRecursiveRouteTask._asic_route_next_hops(routes),
+            {"2001:db8:ff01::/64": 42, "2001:db8::1/128": 42},
+        )
+        self.assertEqual(
+            RbbRecursiveRouteTask._asic_group_members(groups), {42: {51, 52}}
+        )
+
+    async def test_verify_hw_rejects_different_service_and_loopback_groups(self) -> None:
+        driver = MagicMock()
+        driver.async_run_cmd_on_shell = AsyncMock(
+            return_value=(
+                "RouteEntry(switchId: 1, prefix: 2001:db8:ff01::/64): "
+                "(NextHopId: 41, Metadata: 0)\n"
+                "RouteEntry(switchId: 1, prefix: 2001:db8::1/128): "
+                "(NextHopId: 42, Metadata: 0)"
+            )
+        )
+        task = RbbRecursiveRouteTask(logger=MagicMock())
+        with (
+            patch(f"{_MODULE}.async_get_device_driver", AsyncMock(return_value=driver)),
+            self.assertRaisesRegex(TestCaseFailure, "flattening mismatch"),
+        ):
+            await task._verify_hw(
+                "r1.example", "2001:db8:ff01::/64", "2001:db8::1"
+            )
+
     async def test_verify_proves_rib_next_hop_and_equal_resolved_fib(self) -> None:
         driver = MagicMock()
         service = _route("2001:db8:ff01::/64", (_binary("2001:db8:0:2::1"),))
@@ -134,17 +175,21 @@ class RbbRecursiveRouteTaskTest(unittest.IsolatedAsyncioTestCase):
         driver.async_run_cmd_on_shell = AsyncMock(return_value="0")
         driver.async_restart_service = AsyncMock()
         task = RbbRecursiveRouteTask(logger=MagicMock())
-        base = '{"networks6": [{"prefix": "2001:db8:0:2::1/128"}]}'
+        base = '{"networks6": []}'
 
         with (
             patch(f"{_MODULE}.async_get_device_driver", AsyncMock(return_value=driver)),
             patch(f"{_MODULE}.async_read_file_or_none", AsyncMock(return_value=base)),
+            patch.object(task, "_assert_loopback_baseline", AsyncMock()) as baseline,
             patch(f"{_MODULE}.async_backup_before_overwrite", AsyncMock()),
             patch(f"{_MODULE}.async_apply_backup_metadata", AsyncMock()),
             patch(f"{_MODULE}.async_write_json_file", AsyncMock()) as write,
         ):
             await task._install(
-                "r2.example", "2001:db8:ff01::/64", "2001:db8:0:2::1"
+                "r1.example",
+                "r2.example",
+                "2001:db8:ff01::/64",
+                "2001:db8:0:2::1",
             )
 
         document = write.await_args.args[2]
@@ -156,7 +201,74 @@ class RbbRecursiveRouteTaskTest(unittest.IsolatedAsyncioTestCase):
                 "install_to_fib": False,
             },
         )
+        baseline.assert_awaited_once_with(
+            "r1.example", "r2.example", "2001:db8:0:2::1"
+        )
         driver.async_restart_service.assert_awaited_once()
+
+    async def test_loopback_baseline_accepts_local_tail_and_openr_head(self) -> None:
+        next_hop = "2001:db8:0:2::1"
+        loopback_prefix = f"{next_hop}/128"
+        tail_driver = MagicMock()
+        tail_driver.async_get_route_table_details = AsyncMock(
+            return_value=[
+                _detail(
+                    loopback_prefix,
+                    100,
+                    (_binary(next_hop, "fboss4000"),),
+                )
+            ]
+        )
+        head_driver = MagicMock()
+        head_driver.async_get_route_table_by_client = AsyncMock(
+            return_value=[_route(loopback_prefix)]
+        )
+        head_driver.async_get_route_table_details = AsyncMock(
+            return_value=[
+                _detail(
+                    loopback_prefix,
+                    786,
+                    (_binary("fe80::2", "fboss2011"),),
+                )
+            ]
+        )
+        task = RbbRecursiveRouteTask(logger=MagicMock())
+
+        with (
+            patch(
+                f"{_MODULE}.async_get_device_driver",
+                AsyncMock(side_effect=[tail_driver, head_driver]),
+            ),
+            patch(f"{_MODULE}._client_id", return_value=786),
+        ):
+            await task._assert_loopback_baseline(
+                "r1.example", "r2.example", next_hop
+            )
+
+    async def test_loopback_baseline_rejects_nonlocal_tail_route(self) -> None:
+        next_hop = "2001:db8:0:2::1"
+        tail_driver = MagicMock()
+        tail_driver.async_get_route_table_details = AsyncMock(
+            return_value=[
+                _detail(
+                    f"{next_hop}/128",
+                    786,
+                    (_binary("fe80::2", "fboss2011"),),
+                )
+            ]
+        )
+        task = RbbRecursiveRouteTask(logger=MagicMock())
+
+        with (
+            patch(
+                f"{_MODULE}.async_get_device_driver",
+                AsyncMock(return_value=tail_driver),
+            ),
+            self.assertRaisesRegex(TestCaseFailure, "not a resolved local"),
+        ):
+            await task._assert_loopback_baseline(
+                "r1.example", "r2.example", next_hop
+            )
 
     async def test_ixia_baseline_requires_one_bgpd_route_and_resolved_fib(self) -> None:
         driver = MagicMock()

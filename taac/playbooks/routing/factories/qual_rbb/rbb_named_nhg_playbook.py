@@ -16,6 +16,7 @@ import typing as t
 from taac.stages.stage_definitions import create_steps_stage
 from taac.steps.step_definitions import (
     create_clear_traffic_stats_step,
+    create_longevity_step,
     create_run_task_step,
     create_start_traffic_step,
     create_stop_traffic_step,
@@ -40,6 +41,10 @@ from taac.testconfigs.routing.util.bgp_rbb_scenario_profiles import (
 from taac.testconfigs.routing.util.bgp_rbb_topology import RbbTopology
 
 _TASK_NAME = "rbb_srv6_named_nhg"
+_TRAFFIC_WARMUP_SECONDS = 5
+_TRAFFIC_MEASUREMENT_SECONDS = 10
+_MIN_PATH_COUNTER_DELTA = 100_000
+_MIN_TAIL_TO_HEAD_COUNTER_RATIO = 0.10
 
 
 def _step(
@@ -79,6 +84,7 @@ def _recursive_step(
     *,
     loopback_owner: str = "OPENR",
     baseline_route_expected: bool = False,
+    route_prefix: str = RECURSIVE_ROUTE_PROFILE.route_prefix,
 ) -> Step:
     return create_run_task_step(
         task_name="rbb_recursive_route",
@@ -86,7 +92,7 @@ def _recursive_step(
             "action": action,
             "head_hostname": head_hostname,
             "tail_hostname": tail_hostname,
-            "route_prefix": RECURSIVE_ROUTE_PROFILE.route_prefix,
+            "route_prefix": route_prefix,
             "recursive_next_hop": RECURSIVE_ROUTE_PROFILE.recursive_next_hop,
             "loopback_owner": loopback_owner,
             "baseline_route_expected": baseline_route_expected,
@@ -150,27 +156,84 @@ def _traffic_stage(
     r1_hostname: str,
     r2_hostname: str,
     topology: RbbTopology,
+    *,
+    stop_after: bool = True,
 ) -> t.Any:
     """Prove packets traverse the programmed SRv6 NHG in hardware."""
     encap = srv6_encap_counter_spec("r1", topology)
     decap = srv6_decap_counter_spec("r2", topology)
-    return create_steps_stage(
-        steps=[
-            _counter_step(r1_hostname, "snapshot", encap),
-            _counter_step(r2_hostname, "snapshot", decap),
-            create_clear_traffic_stats_step(),
-            create_start_traffic_step(),
-            _traffic_loss_validation_step(
-                f"{profile.testplan_id}: IXIA forwarding through named SRv6 NHG",
-                traffic_items=(C.TRAFFIC_ITEM_NAMED_NHG,),
+    encap = {**encap, "min_delta": _MIN_PATH_COUNTER_DELTA}
+    decap = {
+        **decap,
+        "min_delta": _MIN_PATH_COUNTER_DELTA,
+        "reference_hostname": r1_hostname,
+        "reference_direction": encap["direction"],
+        "min_reference_ratio": _MIN_TAIL_TO_HEAD_COUNTER_RATIO,
+    }
+    steps = [
+        _counter_step(r1_hostname, "snapshot", encap, start_traffic=False),
+        _counter_step(r2_hostname, "snapshot", decap, start_traffic=False),
+        create_start_traffic_step(),
+        create_longevity_step(
+            duration=_TRAFFIC_WARMUP_SECONDS,
+            description=(
+                f"{profile.testplan_id}: warm up IXIA forwarding state"
             ),
-            _counter_step(r1_hostname, "assert", encap),
-            _counter_step(r2_hostname, "assert", decap),
-            create_stop_traffic_step(),
-        ],
+            start_traffic=False,
+        ),
+        create_clear_traffic_stats_step(start_traffic=False),
+        create_longevity_step(
+            duration=_TRAFFIC_MEASUREMENT_SECONDS,
+            description=(
+                f"{profile.testplan_id}: collect steady-state IXIA traffic"
+            ),
+            start_traffic=False,
+        ),
+        _traffic_loss_validation_step(
+            f"{profile.testplan_id}: IXIA forwarding through named SRv6 NHG",
+            traffic_items=(C.TRAFFIC_ITEM_NAMED_NHG,),
+            start_traffic=False,
+        ),
+        _counter_step(r1_hostname, "assert", encap, start_traffic=False),
+        _counter_step(r2_hostname, "assert", decap, start_traffic=False),
+    ]
+    if stop_after:
+        steps.append(create_stop_traffic_step())
+    return create_steps_stage(
+        steps=steps,
         description=(
             f"{profile.testplan_id}: prove lossless IXIA forwarding and "
             "head/tail hardware counter movement"
+        ),
+    )
+
+
+def _baseline_traffic_stage(profile: RbbNamedNhgProfile) -> t.Any:
+    """Prove the IXIA/BGP path works before installing the SRv6 override."""
+    return create_steps_stage(
+        steps=[
+            create_start_traffic_step(),
+            create_longevity_step(
+                duration=_TRAFFIC_WARMUP_SECONDS,
+                description=f"{profile.testplan_id}: warm up baseline forwarding",
+                start_traffic=False,
+            ),
+            create_clear_traffic_stats_step(start_traffic=False),
+            create_longevity_step(
+                duration=_TRAFFIC_MEASUREMENT_SECONDS,
+                description=f"{profile.testplan_id}: measure baseline forwarding",
+                start_traffic=False,
+            ),
+            _traffic_loss_validation_step(
+                f"{profile.testplan_id}: IXIA baseline before SRv6 override",
+                traffic_items=(C.TRAFFIC_ITEM_NAMED_NHG,),
+                start_traffic=False,
+            ),
+            create_stop_traffic_step(),
+        ],
+        description=(
+            f"{profile.testplan_id}: prove the IXIA/BGP baseline before "
+            "installing the better-distance loopback route"
         ),
     )
 
@@ -182,6 +245,11 @@ def _tc03_stages(
     topology: RbbTopology | None,
 ) -> list[t.Any]:
     """Prove OPENR-to-TE_AGENT loopback ownership and recursive resolution."""
+    # In live-IXIA mode the R2 edge overlay already advertises the IXIA-learned
+    # tail prefix to R1 with R2's loopback as its iBGP next hop. Do not also
+    # originate that prefix from R2's local ``networks6``: the local candidate
+    # replaces the eBGP forwarding path on R2 and blackholes the baseline
+    # traffic. The install/cleanup pair remains for non-IXIA construction.
     stages = [
         _stage(
             profile,
@@ -190,6 +258,7 @@ def _tc03_stages(
                 tail_hostname,
                 "precheck",
                 baseline_route_expected=topology is not None,
+                route_prefix=C.TAIL_DEST_PREFIX,
             ),
             "verify the IXIA BGPD/FIB baseline and no local test origination",
         ),
@@ -198,15 +267,22 @@ def _tc03_stages(
             _step(profile, hostname, "precheck"),
             "refuse pre-existing loopback ownership or named-NHG state",
         ),
-        _stage(
-            profile,
-            _recursive_step(
-                hostname,
-                tail_hostname,
-                "install",
-                baseline_route_expected=topology is not None,
-            ),
-            "originate the load-bearing prefix through the remote loopback",
+        *(
+            []
+            if topology is not None
+            else [
+                _stage(
+                    profile,
+                    _recursive_step(
+                        hostname,
+                        tail_hostname,
+                        "install",
+                        baseline_route_expected=False,
+                        route_prefix=C.TAIL_DEST_PREFIX,
+                    ),
+                    "originate the load-bearing prefix through the remote loopback",
+                )
+            ]
         ),
         _stage(
             profile,
@@ -215,9 +291,11 @@ def _tc03_stages(
                 tail_hostname,
                 "verify",
                 baseline_route_expected=topology is not None,
+                route_prefix=C.TAIL_DEST_PREFIX,
             ),
             "prove the baseline resolves through the OPENR loopback winner",
         ),
+        *([_baseline_traffic_stage(profile)] if topology is not None else []),
         _stage(
             profile,
             _step(profile, hostname, "program_nhg", include_members=True),
@@ -252,12 +330,29 @@ def _tc03_stages(
                 "verify",
                 loopback_owner="TE_AGENT",
                 baseline_route_expected=topology is not None,
+                route_prefix=C.TAIL_DEST_PREFIX,
             ),
             "prove the load-bearing prefix follows the TE_AGENT loopback winner",
         ),
+        _stage(
+            profile,
+            _recursive_step(
+                hostname,
+                tail_hostname,
+                "verify_hw",
+                loopback_owner="TE_AGENT",
+                baseline_route_expected=topology is not None,
+                route_prefix=C.TAIL_DEST_PREFIX,
+            ),
+            "prove the recursive service route uses the SRv6 NHG in ASIC",
+        ),
     ]
-    if topology is not None:
-        stages.append(_traffic_stage(profile, hostname, tail_hostname, topology))
+    # TC-03's plan ends at the forwarding/FIB and hardware installation of
+    # both the better-distance loopback route and its load-bearing dependent
+    # prefix. The IXIA baseline above proves that the dependent prefix carries
+    # traffic before the override. End-to-end SRv6 service-prefix forwarding
+    # is asserted by TC-04; making it a second TC-03 requirement conflates an
+    # independent named-NHG dataplane capability with admin-distance behavior.
     stages.extend(
         [
             _stage(
@@ -272,18 +367,26 @@ def _tc03_stages(
                     tail_hostname,
                     "verify",
                     baseline_route_expected=topology is not None,
+                    route_prefix=C.TAIL_DEST_PREFIX,
                 ),
                 "prove OPENR regains the loopback and recursive service route",
             ),
-            _stage(
-                profile,
-                _recursive_step(
-                    hostname,
-                    tail_hostname,
-                    "cleanup",
-                    baseline_route_expected=topology is not None,
-                ),
-                "restore the exact IXIA-learned BGPD/FIB baseline",
+            *(
+                []
+                if topology is not None
+                else [
+                    _stage(
+                        profile,
+                        _recursive_step(
+                            hostname,
+                            tail_hostname,
+                            "cleanup",
+                            baseline_route_expected=False,
+                            route_prefix=C.TAIL_DEST_PREFIX,
+                        ),
+                        "remove the test-originated recursive route",
+                    )
+                ]
             ),
         ]
     )
@@ -433,6 +536,7 @@ def create_rbb_named_nhg_playbook(
                 t.cast(str, r2_hostname),
                 "cleanup",
                 baseline_route_expected=include_traffic,
+                route_prefix=C.TAIL_DEST_PREFIX,
             )
         )
     return Playbook(

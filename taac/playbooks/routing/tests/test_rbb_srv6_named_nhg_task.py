@@ -16,6 +16,7 @@ _DRIVER_PATH = "taac.tasks.rbb_srv6_named_nhg_task.async_get_device_driver"
 _HOST = "rbb-r1"
 _GROUP = "taac-rbb-p2-test"
 _PREFIX = "2001:db8:100::/64"
+_ANCHOR_PREFIX = "2001:db8:ff00::1/128"
 _MEMBERS = [
     {
         "address": "2001:db8:12::2",
@@ -45,6 +46,34 @@ def _driver(agent):
     driver.async_agent_client = MagicMock()
     driver.async_agent_client.__aenter__ = AsyncMock(return_value=agent)
     driver.async_agent_client.__aexit__ = AsyncMock(return_value=False)
+    driver.async_get_route_table_details = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                dest=_dest("2001:db8:12::/64"),
+                isConnected=True,
+                resolvedNextHops=[
+                    SimpleNamespace(
+                        address=SimpleNamespace(
+                            addr=ipaddress.ip_address("2001:db8:12::1").packed,
+                            ifName="fboss2011",
+                        )
+                    )
+                ],
+            ),
+            SimpleNamespace(
+                dest=_dest("2001:db8:200::/64"),
+                isConnected=False,
+                resolvedNextHops=[
+                    SimpleNamespace(
+                        address=SimpleNamespace(
+                            addr=ipaddress.ip_address("fe80::2").packed,
+                            ifName="fboss2011",
+                        )
+                    )
+                ],
+            ),
+        ]
+    )
     return driver
 
 
@@ -376,6 +405,130 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         agent.addNamedNextHopGroups.assert_awaited_once()
         agent.addOrUpdateNamedNextHopGroups.assert_not_awaited()
         agent.addUnicastRoutes.assert_awaited_once()
+
+    async def test_program_nhg_clones_resolved_source_route_members(self) -> None:
+        from facebook.network.Address.types import BinaryAddress
+        from neteng.fboss.common.types import NextHopRole
+
+        state = {"group": None}
+        source = SimpleNamespace(
+            dest=_dest(),
+            nextHops=[
+                SimpleNamespace(
+                    address=BinaryAddress(
+                        addr=ipaddress.ip_address("fe80::2").packed,
+                        ifName="fboss2011",
+                    ),
+                    weight=0,
+                    mplsAction=None,
+                    disableTTLDecrement=None,
+                    adjustedWeight=None,
+                    topologyInfo=None,
+                    cost=1,
+                    role=NextHopRole.PRIMARY,
+                    backupNexthops=None,
+                )
+            ],
+        )
+        agent = MagicMock()
+
+        async def get_groups(_names):
+            return [state["group"]] if state["group"] is not None else []
+
+        async def add_groups(groups):
+            supplied = groups[0]
+            state["group"] = SimpleNamespace(
+                name=supplied.name,
+                nexthops=list(supplied.nexthops),
+                isProgrammed=False,
+            )
+
+        agent.getNamedNextHopGroups = AsyncMock(side_effect=get_groups)
+        agent.getRouteTableByClient = AsyncMock(return_value=[source])
+        agent.addNamedNextHopGroups = AsyncMock(side_effect=add_groups)
+
+        params = {
+            "member_source_client": "OPENR",
+            "member_source_prefix": _PREFIX,
+        }
+        with patch(_DRIVER_PATH, new_callable=AsyncMock, return_value=_driver(agent)):
+            await RbbSrv6NamedNhgTask(
+                hostname=_HOST, logger=MagicMock(), shared_data={}
+            ).run(_params("program_nhg", include_members=True, **params))
+
+        programmed = state["group"].nexthops[0]
+        self.assertEqual(programmed.address.addr, source.nextHops[0].address.addr)
+        self.assertEqual(programmed.address.ifName, "fboss2011")
+        self.assertEqual(programmed.weight, 1)
+        self.assertEqual(programmed.cost, 1)
+        self.assertEqual(programmed.role, NextHopRole.PRIMARY)
+        self.assertTrue(programmed.srv6SegmentList)
+
+    async def test_underlay_anchor_primes_global_nexthop_and_cleans_up_last(
+        self,
+    ) -> None:
+        state = {"group": None, "anchor": None}
+        order = []
+        agent = MagicMock()
+
+        async def get_groups(_names):
+            return [state["group"]] if state["group"] is not None else []
+
+        async def get_routes(_client_id):
+            return [state["anchor"]] if state["anchor"] is not None else []
+
+        async def add_routes(_client_id, routes):
+            order.append("add-anchor")
+            state["anchor"] = routes[0]
+
+        async def add_groups(groups):
+            order.append("add-group")
+            supplied = groups[0]
+            state["group"] = SimpleNamespace(
+                name=supplied.name,
+                nexthops=list(supplied.nexthops),
+                isProgrammed=False,
+            )
+
+        async def delete_groups(_names):
+            order.append("delete-group")
+            state["group"] = None
+
+        async def delete_routes(_client_id, _prefixes):
+            order.append("delete-anchor")
+            state["anchor"] = None
+
+        agent.getNamedNextHopGroups = AsyncMock(side_effect=get_groups)
+        agent.getRouteTableByClient = AsyncMock(side_effect=get_routes)
+        agent.addUnicastRoutes = AsyncMock(side_effect=add_routes)
+        agent.addNamedNextHopGroups = AsyncMock(side_effect=add_groups)
+        agent.deleteNamedNextHopGroups = AsyncMock(side_effect=delete_groups)
+        agent.deleteUnicastRoutes = AsyncMock(side_effect=delete_routes)
+        shared = {}
+        params = {"underlay_anchor_prefix": _ANCHOR_PREFIX}
+
+        with patch(_DRIVER_PATH, new_callable=AsyncMock, return_value=_driver(agent)):
+            await RbbSrv6NamedNhgTask(
+                hostname=_HOST, logger=MagicMock(), shared_data=shared
+            ).run(_params("program_nhg", include_members=True, **params))
+            anchor = ipaddress.ip_network(_ANCHOR_PREFIX)
+            self.assertEqual(state["anchor"].dest.ip.addr, anchor.network_address.packed)
+            self.assertEqual(state["anchor"].dest.prefixLength, anchor.prefixlen)
+            self.assertTrue(state["anchor"].nextHops)
+            self.assertTrue(
+                all(
+                    not getattr(next_hop, "srv6SegmentList", None)
+                    for next_hop in state["anchor"].nextHops
+                )
+            )
+            await RbbSrv6NamedNhgTask(
+                hostname=_HOST, logger=MagicMock(), shared_data=shared
+            ).run(_params("cleanup", include_members=True, **params))
+
+        self.assertEqual(
+            order,
+            ["add-anchor", "add-group", "delete-group", "delete-anchor"],
+        )
 
     async def test_program_nhg_refuses_unowned_name_collision(self) -> None:
         agent = MagicMock()

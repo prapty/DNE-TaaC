@@ -86,7 +86,7 @@ def create_rbb_named_nhg_test_config(
                         RECURSIVE_ROUTE_PROFILE,
                         r1_hostname=r1.device_name,
                         r2_hostname=r2.device_name,
-                        baseline_route_expected=include_traffic,
+                        baseline_route_expected=False,
                     )
                 ]
                 if include_tc01
@@ -114,10 +114,9 @@ def create_rbb_named_nhg_test_config(
         r2=r2,
         topology=topology,
         include_traffic=include_traffic,
-        traffic_route_prefix=(
-            RECURSIVE_ROUTE_PROFILE.route_prefix if include_traffic else None
-        ),
+        traffic_route_prefix=C.TAIL_DEST_PREFIX if include_traffic else None,
         traffic_item_name=C.TRAFFIC_ITEM_NAMED_NHG,
+        traffic_ibgp_next_hop=C.R2_LOOPBACK_V6,
     )
 
 

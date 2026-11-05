@@ -2,6 +2,8 @@
 # pyre-unsafe
 """Integration tests for the named SRv6 NHG TestConfig."""
 
+import ipaddress
+import json
 import runpy
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ from unittest import mock
 from taac.testconfigs.routing.factories.qual_rbb.rbb_named_nhg_test_config import (
     create_rbb_named_nhg_test_config,
 )
+from taac.testconfigs.routing.util import bgp_rbb_constants as C
 from taac.testconfigs.routing.util.bgp_rbb_topology import (
     CorePortChannel,
     IxiaEdge,
@@ -67,14 +70,39 @@ class RbbNamedNhgTestConfigTest(unittest.TestCase):
             .v6_bgp_config.route_scales[0]
             .v6_route_scale
         )
-        self.assertEqual(advertised.starting_prefixes, "2001:db8:ff01::")
-        self.assertEqual(advertised.prefix_length, 64)
+        tail_prefix = ipaddress.ip_network(C.TAIL_DEST_PREFIX)
+        self.assertEqual(advertised.starting_prefixes, str(tail_prefix.network_address))
+        self.assertEqual(advertised.prefix_length, tail_prefix.prefixlen)
         self.assertEqual(advertised.prefix_count, 1)
         self.assertEqual(len(config.endpoints), 2)
         for endpoint in config.endpoints:
             self.assertTrue(endpoint.ixia_needed)
             self.assertTrue(endpoint.ixia_ports)
             self.assertTrue(endpoint.direct_ixia_connections)
+
+        tc01_params = [
+            json.loads(json.loads(step.input_json)["task"]["params"]["json_params"])
+            for stage in config.playbooks[0].stages
+            for step in stage.steps
+        ]
+        self.assertTrue(
+            all(not params["baseline_route_expected"] for params in tc01_params)
+        )
+
+    def test_edge_overlay_advertises_tail_prefix_via_r2_loopback(self) -> None:
+        with mock.patch.object(C, "EDGE_EBGP_ENABLED", True):
+            config = create_rbb_named_nhg_test_config(_topology())
+
+        edge_params = [
+            json.loads(task.params.json_params)
+            for task in config.setup_tasks or []
+            if task.task_name == "rbb_edge_ebgp"
+        ]
+        self.assertEqual(len(edge_params), 2)
+        self.assertEqual(edge_params[1]["ibgp_srv6_nexthop"], C.R2_LOOPBACK_V6)
+        self.assertEqual(
+            edge_params[1]["withdraw_network6_prefix"], C.TAIL_DEST_PREFIX
+        )
 
     def test_explicit_selection_keeps_catalog_order(self) -> None:
         config = create_rbb_named_nhg_test_config(

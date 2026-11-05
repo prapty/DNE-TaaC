@@ -26,6 +26,7 @@ a registered Task (not a new ``CheckName``) for the same schema-stability reason
 as ``rbb_srv6_verify`` — no Thrift edit, no ``all_health_checks`` change.
 """
 
+import math
 import re
 import typing as t
 
@@ -76,6 +77,10 @@ class RbbSrv6CounterDeltaTask(BaseTask):
             counter_regex: regex with one integer capture group (required).
             direction: "encap" / "decap" label for the shared-data key + logs.
             min_delta: minimum required increase for "assert" (default 1).
+            reference_hostname/reference_direction: optional previously asserted
+                counter delta to compare against.
+            min_reference_ratio: require this counter delta to be at least this
+                fraction of the referenced delta.
             gate: human-readable gate label (optional).
         """
         hostname = params.get("hostname") or self.hostname
@@ -101,6 +106,21 @@ class RbbSrv6CounterDeltaTask(BaseTask):
             raise ValueError(
                 "rbb_srv6_counter_delta 'min_delta' must be at least 1 for "
                 f"an assert action, got {min_delta}"
+            )
+        reference_hostname = params.get("reference_hostname")
+        reference_direction = params.get("reference_direction")
+        min_reference_ratio = float(params.get("min_reference_ratio", 0.0))
+        if not math.isfinite(min_reference_ratio) or min_reference_ratio < 0:
+            raise ValueError(
+                "rbb_srv6_counter_delta 'min_reference_ratio' must be a "
+                "finite non-negative number"
+            )
+        if min_reference_ratio and not (
+            reference_hostname and reference_direction
+        ):
+            raise ValueError(
+                "reference_hostname and reference_direction are required when "
+                "min_reference_ratio is set"
             )
 
         driver = await async_get_device_driver(hostname)
@@ -139,3 +159,27 @@ class RbbSrv6CounterDeltaTask(BaseTask):
                 f"{delta} (< required {min_delta}); expected traffic to "
                 f"{direction} across the core"
             )
+        self._data[f"{key}:delta"] = delta
+
+        if min_reference_ratio:
+            reference_key = f"{reference_hostname}:{reference_direction}:delta"
+            reference_delta = self._data.get(reference_key)
+            if reference_delta is None:
+                raise TestCaseFailure(
+                    f"[{gate}] no asserted reference delta recorded for "
+                    f"{reference_hostname}:{reference_direction}"
+                )
+            required_delta = math.ceil(reference_delta * min_reference_ratio)
+            ratio = delta / reference_delta
+            self.logger.info(
+                f"{hostname} -- [{gate}] {direction} delta={delta}; "
+                f"reference={reference_delta} ratio={ratio:.6f} "
+                f"(min_ratio={min_reference_ratio})"
+            )
+            if delta < required_delta:
+                raise TestCaseFailure(
+                    f"[{gate}] selected {direction}-path counter delta on "
+                    f"{hostname} was {delta}, only {ratio:.6f} of the reference "
+                    f"delta {reference_delta}; required at least "
+                    f"{min_reference_ratio:.6f} ({required_delta})"
+                )

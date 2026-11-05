@@ -265,6 +265,16 @@ class RbbTestConfigStructureTest(unittest.TestCase):
         )
         self.assertTrue(config.basic_port_configs)
         self.assertEqual(len(config.basic_port_configs or []), 2)
+        tail_port = (config.basic_port_configs or [])[1]
+        advertised = (
+            tail_port.device_group_configs[0]
+            .v6_bgp_config.route_scales[0]
+            .v6_route_scale
+        )
+        tail_prefix = ipaddress.ip_network(C.TAIL_DEST_PREFIX)
+        self.assertEqual(advertised.starting_prefixes, str(tail_prefix.network_address))
+        self.assertEqual(advertised.prefix_length, tail_prefix.prefixlen)
+        self.assertEqual(advertised.prefix_count, 1)
         items = config.basic_traffic_item_configs or []
         self.assertEqual([item.name for item in items], [C.TRAFFIC_ITEM_R1_TO_R2])
         self.assertTrue(

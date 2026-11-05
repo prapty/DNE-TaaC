@@ -112,7 +112,7 @@ class RbbNamedNhgProfilesTest(unittest.TestCase):
         )
         self.assertEqual(tc03.route_prefix, f"{C.R2_LOOPBACK_V6}/128")
         self.assertEqual(tc03.competing_client, "OPENR")
-        self.assertEqual(tc04.route_prefix, C.RECURSIVE_ROUTE_TEST_PREFIX)
+        self.assertEqual(tc04.route_prefix, C.TAIL_DEST_PREFIX)
         self.assertIsNone(tc04.competing_client)
         self.assertNotEqual(tc02.route_prefix, C.TAIL_DEST_PREFIX)
         self.assertTrue(

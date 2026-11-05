@@ -213,9 +213,18 @@ class RbbSrv6ThreeUsidsPlaybookTest(unittest.TestCase):
                 check["name"] == hc_types.CheckName.IXIA_PACKET_LOSS_CHECK.value
                 for check in payload["point_in_time_checks"]
             ):
-                loss_validations.append(payload)
+                loss_validations.append((payload, step.step_params))
         self.assertTrue(loss_validations)
-        self.assertTrue(all(payload["fail_fast"] for payload in loss_validations))
+        self.assertTrue(
+            all(payload["fail_fast"] for payload, _ in loss_validations)
+        )
+        self.assertTrue(
+            all(
+                params is not None
+                and json.loads(params.json_params)["fail_on_failure"]
+                for _, params in loss_validations
+            )
+        )
 
     def test_has_validation_steps(self) -> None:
         pb = _tc1(include_traffic=True)

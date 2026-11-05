@@ -58,6 +58,9 @@ _ALLOWED_PARAMS = frozenset(
         "action",
         "group_name",
         "route_prefix",
+        "underlay_anchor_prefix",
+        "member_source_client",
+        "member_source_prefix",
         "client",
         "competing_client",
         "admin_distance",
@@ -188,6 +191,36 @@ def _normalize_params(
         )
 
     route_prefix = _normalize_ipv6_network(params.get("route_prefix"), "route_prefix")
+    underlay_anchor_prefix = (
+        _normalize_ipv6_network(
+            params["underlay_anchor_prefix"], "underlay_anchor_prefix"
+        )
+        if params.get("underlay_anchor_prefix") is not None
+        else None
+    )
+    if underlay_anchor_prefix is not None:
+        if underlay_anchor_prefix.prefixlen != 128:
+            raise ValueError("underlay_anchor_prefix must be an IPv6 /128")
+        if underlay_anchor_prefix == route_prefix:
+            raise ValueError("underlay_anchor_prefix must differ from route_prefix")
+    member_source_client = (
+        _enum_name(params["member_source_client"], "member_source_client")
+        if params.get("member_source_client") is not None
+        else None
+    )
+    member_source_prefix = (
+        _normalize_ipv6_network(
+            params["member_source_prefix"], "member_source_prefix"
+        )
+        if params.get("member_source_prefix") is not None
+        else None
+    )
+    if (member_source_client is None) != (member_source_prefix is None):
+        raise ValueError(
+            "member_source_client and member_source_prefix must be supplied together"
+        )
+    if member_source_client not in {None, "OPENR", "BGPD"}:
+        raise ValueError("member_source_client must be OPENR or BGPD")
     client = _enum_name(params.get("client", _DEFAULT_CLIENT), "client")
     competing_client = (
         _enum_name(params["competing_client"], "competing_client")
@@ -223,6 +256,9 @@ def _normalize_params(
         "action": action,
         "group_name": group_name,
         "route_prefix": route_prefix,
+        "underlay_anchor_prefix": underlay_anchor_prefix,
+        "member_source_client": member_source_client,
+        "member_source_prefix": member_source_prefix,
         "client": client,
         "competing_client": competing_client,
         "admin_distance": admin_distance,
@@ -389,6 +425,15 @@ class RbbSrv6NamedNhgTask(BaseTask):
     def _members_key(hostname: str, group_name: str) -> str:
         return f"expected:group-members:{hostname}:{group_name}"
 
+    @staticmethod
+    def _anchor_key(
+        hostname: str, anchor_prefix: ipaddress.IPv6Network, client: str
+    ) -> str:
+        return (
+            f"owned:underlay-anchor:{hostname}:"
+            f"{anchor_prefix.with_prefixlen}:{client}"
+        )
+
     def _is_owned(self, key: str) -> bool:
         return key in self._data and self._data[key] is True
 
@@ -416,6 +461,17 @@ class RbbSrv6NamedNhgTask(BaseTask):
                     "unknown FBOSS ClientID "
                     f"{normalized['competing_client']!r}"
                 ) from exc
+        member_source_client_id = None
+        if normalized["member_source_client"] is not None:
+            try:
+                member_source_client_id = _enum_int(
+                    getattr(ClientID, normalized["member_source_client"])
+                )
+            except AttributeError as exc:
+                raise ValueError(
+                    "unknown FBOSS ClientID "
+                    f"{normalized['member_source_client']!r}"
+                ) from exc
         try:
             admin_distance = getattr(AdminDistance, normalized["admin_distance"])
         except AttributeError as exc:
@@ -429,6 +485,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
             normalized,
             client_id=_enum_int(client_member),
             competing_client_id=competing_client_id,
+            member_source_client_id=member_source_client_id,
             admin_distance=admin_distance,
         )
 
@@ -470,7 +527,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
             key=repr,
         )
         expected = _expected_member_signatures(members, tunnel_type)
-        if observed != expected:
+        if not _fib_signatures_match(expected, observed):
             raise TestCaseFailure(
                 f"{hostname}: named next-hop group {group_name!r} member mismatch; "
                 f"expected={expected!r}, observed={observed!r}"
@@ -765,6 +822,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
         *,
         client_id: int,
         competing_client_id: int | None,
+        member_source_client_id: int | None,
         admin_distance: t.Any,
     ) -> None:
         from facebook.network.Address.types import BinaryAddress
@@ -781,6 +839,9 @@ class RbbSrv6NamedNhgTask(BaseTask):
         action = params["action"]
         group_name = params["group_name"]
         route_prefix = params["route_prefix"]
+        underlay_anchor_prefix = params["underlay_anchor_prefix"]
+        member_source_client = params["member_source_client"]
+        member_source_prefix = params["member_source_prefix"]
         client = params["client"]
         competing_client = params["competing_client"]
         members = params["members"]
@@ -788,6 +849,11 @@ class RbbSrv6NamedNhgTask(BaseTask):
         group_key = self._group_key(hostname, group_name)
         route_key = self._route_key(hostname, route_prefix, client)
         members_key = self._members_key(hostname, group_name)
+        anchor_key = (
+            self._anchor_key(hostname, underlay_anchor_prefix, client)
+            if underlay_anchor_prefix is not None
+            else None
+        )
 
         def _serializable_members(
             values: t.Sequence[t.Mapping[str, t.Any]],
@@ -823,25 +889,103 @@ class RbbSrv6NamedNhgTask(BaseTask):
                 for value in values
             )
 
-        def _make_group() -> t.Any:
+        def _make_group(
+            source_next_hops: t.Sequence[t.Any] | None = None,
+        ) -> tuple[t.Any, tuple[dict[str, t.Any], ...]]:
+            next_hops = []
+            expected_members: list[dict[str, t.Any]] = []
+            templates = t.cast(t.Sequence[t.Mapping[str, t.Any]], members)
+            if source_next_hops is not None and len(source_next_hops) != len(templates):
+                raise TestCaseFailure(
+                    f"{hostname}: {member_source_client} route "
+                    f"{member_source_prefix.with_prefixlen} has "
+                    f"{len(source_next_hops)} next hops, but the SRv6 profile "
+                    f"declares {len(templates)} path(s)"
+                )
+            for index, template in enumerate(templates):
+                source = source_next_hops[index] if source_next_hops is not None else None
+                if source is None:
+                    address = template["address"]
+                    interface = template["interface"]
+                    weight = template["weight"]
+                    address_kwargs: dict[str, t.Any] = {"addr": address.packed}
+                    if interface is not None:
+                        address_kwargs["ifName"] = interface
+                    kwargs: dict[str, t.Any] = {
+                        "address": BinaryAddress(**address_kwargs),
+                        "weight": weight,
+                    }
+                else:
+                    address = _packed_address(source.address)
+                    interface = getattr(source.address, "ifName", None) or None
+                    # Route-table clients use zero for an unspecified/default
+                    # ECMP weight. Named NHGs and the resolved FIB expose that
+                    # same equal-cost member as the explicit portable weight 1.
+                    weight = int(getattr(source, "weight", 0)) or 1
+                    kwargs = {"address": source.address, "weight": weight}
+                    for field in (
+                        "mplsAction",
+                        "disableTTLDecrement",
+                        "adjustedWeight",
+                        "topologyInfo",
+                        "cost",
+                        "role",
+                        "backupNexthops",
+                    ):
+                        if hasattr(source, field) and hasattr(NextHopThrift, field):
+                            kwargs[field] = getattr(source, field)
+                kwargs.update(
+                    {
+                        "srv6SegmentList": [
+                            BinaryAddress(addr=segment.packed)
+                            for segment in template["srv6_segments"]
+                        ],
+                        "tunnelType": TunnelType.SRV6_ENCAP,
+                        "tunnelId": template["tunnel_id"],
+                    }
+                )
+                next_hops.append(NextHopThrift(**kwargs))
+                expected_members.append(
+                    {
+                        "address": address,
+                        "interface": interface,
+                        "weight": weight,
+                        "srv6_segments": template["srv6_segments"],
+                        "tunnel_id": template["tunnel_id"],
+                    }
+                )
+            return (
+                NextHopGroup(name=group_name, nexthops=next_hops),
+                tuple(expected_members),
+            )
+
+        def _make_underlay_anchor() -> t.Any:
+            if underlay_anchor_prefix is None:
+                raise AssertionError("underlay anchor prefix is absent")
             next_hops = []
             for member in t.cast(t.Sequence[t.Mapping[str, t.Any]], members):
-                address_kwargs: dict[str, t.Any] = {"addr": member["address"].packed}
+                address_kwargs: dict[str, t.Any] = {
+                    "addr": member["address"].packed
+                }
                 if member["interface"] is not None:
                     address_kwargs["ifName"] = member["interface"]
                 next_hops.append(
                     NextHopThrift(
                         address=BinaryAddress(**address_kwargs),
                         weight=member["weight"],
-                        srv6SegmentList=[
-                            BinaryAddress(addr=segment.packed)
-                            for segment in member["srv6_segments"]
-                        ],
-                        tunnelType=TunnelType.SRV6_ENCAP,
-                        tunnelId=member["tunnel_id"],
                     )
                 )
-            return NextHopGroup(name=group_name, nexthops=next_hops)
+            return UnicastRoute(
+                dest=IpPrefix(
+                    ip=BinaryAddress(
+                        addr=underlay_anchor_prefix.network_address.packed
+                    ),
+                    prefixLength=underlay_anchor_prefix.prefixlen,
+                ),
+                nextHopAddrs=[],
+                nextHops=next_hops,
+                adminDistance=admin_distance,
+            )
 
         route = UnicastRoute(
             dest=IpPrefix(
@@ -867,6 +1011,18 @@ class RbbSrv6NamedNhgTask(BaseTask):
                         f"{route_prefix.with_prefixlen}; refusing to adopt an "
                         "operator-owned route"
                     )
+                if (
+                    underlay_anchor_prefix is not None
+                    and await self._client_route(
+                        agent, client_id, underlay_anchor_prefix
+                    )
+                    is not None
+                ):
+                    raise TestCaseFailure(
+                        f"{hostname}: {client} already owns underlay anchor "
+                        f"{underlay_anchor_prefix.with_prefixlen}; refusing to "
+                        "adopt an operator-owned route"
+                    )
                 return
 
             if action == _PROGRAM_NHG:
@@ -890,11 +1046,60 @@ class RbbSrv6NamedNhgTask(BaseTask):
                     )
                     return
 
+                if underlay_anchor_prefix is not None:
+                    existing_anchor = await self._client_route(
+                        agent, client_id, underlay_anchor_prefix
+                    )
+                    if existing_anchor is not None and not self._is_owned(
+                        t.cast(str, anchor_key)
+                    ):
+                        raise TestCaseFailure(
+                            f"{hostname}: {client} already owns underlay anchor "
+                            f"{underlay_anchor_prefix.with_prefixlen}; refusing "
+                            "to replace it"
+                        )
+                    if existing_anchor is None:
+                        self._data[t.cast(str, anchor_key)] = True
+                        anchor = _make_underlay_anchor()
+                        await agent.addUnicastRoutes(client_id, [anchor])
+                        if (
+                            await self._client_route(
+                                agent, client_id, underlay_anchor_prefix
+                            )
+                            is None
+                        ):
+                            raise TestCaseFailure(
+                                f"{hostname}: underlay anchor "
+                                f"{underlay_anchor_prefix.with_prefixlen} was "
+                                "not readable after install"
+                            )
+
+                source_next_hops = None
+                if member_source_client_id is not None:
+                    source_route = await self._client_route(
+                        agent,
+                        member_source_client_id,
+                        t.cast(ipaddress.IPv6Network, member_source_prefix),
+                    )
+                    if source_route is None:
+                        raise TestCaseFailure(
+                            f"{hostname}: cannot build named SRv6 NHG "
+                            f"{group_name!r}; exact {member_source_client} route "
+                            f"{member_source_prefix.with_prefixlen} is absent"
+                        )
+                    source_next_hops = tuple(
+                        getattr(source_route, "nextHops", None) or ()
+                    )
+                    if not source_next_hops:
+                        raise TestCaseFailure(
+                            f"{hostname}: {member_source_client} route "
+                            f"{member_source_prefix.with_prefixlen} has no "
+                            "structured forwarding next hops to clone"
+                        )
+
+                group, programmed_members = _make_group(source_next_hops)
                 self._data[group_key] = True
-                self._data[members_key] = _serializable_members(
-                    t.cast(t.Sequence[t.Mapping[str, t.Any]], members)
-                )
-                group = _make_group()
+                self._data[members_key] = _serializable_members(programmed_members)
                 add_named = getattr(agent, "addNamedNextHopGroups", None)
                 if add_named is not None:
                     await add_named([group])
@@ -914,7 +1119,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
                     hostname,
                     programmed,
                     group_name,
-                    t.cast(t.Sequence[t.Mapping[str, t.Any]], members),
+                    programmed_members,
                     TunnelType.SRV6_ENCAP,
                     expected_programmed,
                 )
@@ -925,11 +1130,16 @@ class RbbSrv6NamedNhgTask(BaseTask):
                 return
 
             if action == _VERIFY_NHG:
+                verify_members = (
+                    _shared_members()
+                    if members_key in self._data
+                    else t.cast(t.Sequence[t.Mapping[str, t.Any]], members)
+                )
                 self._assert_group_matches(
                     hostname,
                     await self._read_group(agent, group_name),
                     group_name,
-                    t.cast(t.Sequence[t.Mapping[str, t.Any]], members),
+                    verify_members,
                     TunnelType.SRV6_ENCAP,
                     expected_programmed,
                 )
@@ -1163,15 +1373,23 @@ class RbbSrv6NamedNhgTask(BaseTask):
                             "continuing with group cleanup"
                         )
 
+                group_removed = not self._is_owned(group_key)
                 if self._is_owned(group_key):
                     try:
                         existing_group = await self._read_group(agent, group_name)
                         if existing_group is not None:
+                            cleanup_members = (
+                                _shared_members()
+                                if members_key in self._data
+                                else t.cast(
+                                    t.Sequence[t.Mapping[str, t.Any]], members
+                                )
+                            )
                             self._assert_group_matches(
                                 hostname,
                                 existing_group,
                                 group_name,
-                                t.cast(t.Sequence[t.Mapping[str, t.Any]], members),
+                                cleanup_members,
                                 TunnelType.SRV6_ENCAP,
                                 None,
                             )
@@ -1182,6 +1400,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
                                     f"{group_name!r} remained after delete"
                                 )
                         self._data[group_key] = False
+                        group_removed = True
                     except asyncio.CancelledError as exc:
                         if cancellation is None:
                             cancellation = exc
@@ -1196,6 +1415,47 @@ class RbbSrv6NamedNhgTask(BaseTask):
                         failures.append(f"group cleanup: {exc}")
                         self.logger.exception(
                             f"{hostname}: named-NHG group cleanup failed"
+                        )
+
+                if (
+                    group_removed
+                    and underlay_anchor_prefix is not None
+                    and self._is_owned(t.cast(str, anchor_key))
+                ):
+                    try:
+                        existing_anchor = await self._client_route(
+                            agent, client_id, underlay_anchor_prefix
+                        )
+                        if existing_anchor is not None:
+                            await agent.deleteUnicastRoutes(
+                                client_id, [existing_anchor.dest]
+                            )
+                            if (
+                                await self._client_route(
+                                    agent, client_id, underlay_anchor_prefix
+                                )
+                                is not None
+                            ):
+                                raise TestCaseFailure(
+                                    f"{hostname}: underlay anchor "
+                                    f"{underlay_anchor_prefix.with_prefixlen} "
+                                    "remained after delete"
+                                )
+                        self._data[t.cast(str, anchor_key)] = False
+                    except asyncio.CancelledError as exc:
+                        if cancellation is None:
+                            cancellation = exc
+                        else:
+                            cancellation.add_note(
+                                "Named-NHG anchor cleanup was also cancelled."
+                            )
+                        self.logger.exception(
+                            f"{hostname}: named-NHG anchor cleanup was cancelled"
+                        )
+                    except Exception as exc:
+                        failures.append(f"anchor cleanup: {exc}")
+                        self.logger.exception(
+                            f"{hostname}: named-NHG anchor cleanup failed"
                         )
 
                 if cancellation is not None:

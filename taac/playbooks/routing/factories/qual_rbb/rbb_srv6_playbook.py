@@ -93,7 +93,13 @@ def _verify_step(hostname: str, spec: dict[str, t.Any]) -> Step:
     )
 
 
-def _counter_step(hostname: str, action: str, spec: dict[str, t.Any]) -> Step:
+def _counter_step(
+    hostname: str,
+    action: str,
+    spec: dict[str, t.Any],
+    *,
+    start_traffic: bool = True,
+) -> Step:
     """Wrap a counter spec into an ``rbb_srv6_counter_delta`` task step."""
     params = {"hostname": hostname, "action": action, **spec}
     return create_run_task_step(
@@ -104,6 +110,7 @@ def _counter_step(hostname: str, action: str, spec: dict[str, t.Any]) -> Step:
             f"{spec.get('direction', 'srv6')} path counter on {hostname}"
         ),
         ixia_needed=True,
+        start_traffic=start_traffic,
     )
 
 
@@ -123,6 +130,8 @@ def _bgp_peer_up_step(hostname: str, peer: str, gate: str) -> Step:
 def _traffic_loss_validation_step(
     description: str,
     traffic_items: t.Sequence[str] = C.ALL_TRAFFIC_ITEMS,
+    *,
+    start_traffic: bool = True,
 ) -> Step:
     """Packet-loss assertion over the configured R1-to-R2 SRv6 path."""
     return create_validation_step(
@@ -139,9 +148,12 @@ def _traffic_loss_validation_step(
             ),
         ],
         description=description,
-        # This is the dataplane acceptance gate.  Without fail-fast, TAAC
-        # records the health failure for the final summary but prints a green
-        # step/stage result, which can make 100% loss look successful.
+        start_traffic=start_traffic,
+        # This is the dataplane acceptance gate. ``fail_fast`` controls the
+        # validation handler, while ``fail_on_failure`` supplies the exception
+        # class used by the generic step wrapper. Both are required; otherwise
+        # TAAC records the health failure but prints a green step/stage result.
+        fail_on_failure=True,
         fail_fast=True,
     )
 

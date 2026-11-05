@@ -182,6 +182,14 @@ NAMED_NHG_TEST_PREFIX: str = os.environ.get(
     "TAAC_RBB_NAMED_NHG_TEST_PREFIX", "2001:db8:ff00::/64"
 )
 
+# A host route inside the isolated named-NHG range is used to instantiate the
+# ordinary underlay next-hop objects before an SRv6 SID list subscribes to
+# them. This avoids an ordering bug in affected FBOSS SAI builds without
+# changing the global next-hop addresses used by the forwarding test.
+NAMED_NHG_UNDERLAY_ANCHOR_PREFIX: str = os.environ.get(
+    "TAAC_RBB_NAMED_NHG_UNDERLAY_ANCHOR_PREFIX", "2001:db8:ff00::1/128"
+)
+
 # Isolated service prefix used by Phase-2 TC-01. R2 originates this prefix
 # only for the duration of the lifecycle playbook, with R2_LOOPBACK_V6 as its
 # explicit iBGP next hop; cleanup restores the exact pre-run BGP config.
