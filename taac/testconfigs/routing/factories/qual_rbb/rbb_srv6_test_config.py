@@ -95,7 +95,9 @@ def _resolve_topology(
 
 
 def _validate_traffic_route_contract(
-    profile: Srv6Profile, include_traffic: bool
+    profile: Srv6Profile,
+    include_traffic: bool,
+    traffic_route_prefix: str | None = None,
 ) -> None:
     """Validate IXIA addressing and TC1's exact steered-route contract."""
     if not include_traffic:
@@ -104,6 +106,7 @@ def _validate_traffic_route_contract(
         ("R1", C.IXIA_R1_EDGE_V6, C.IXIA_R1_EDGE_GW_V6),
         ("R2", C.IXIA_R2_EDGE_V6, C.IXIA_R2_EDGE_GW_V6),
     )
+    edge_networks: list[ipaddress.IPv6Network] = []
     for role, peer, gateway in edge_pairs:
         peer_interface = ipaddress.ip_interface(f"{peer}/{C.IXIA_EDGE_PREFIX_MASK}")
         gateway_interface = ipaddress.ip_interface(
@@ -118,6 +121,7 @@ def _validate_traffic_route_contract(
             )
         if peer_interface.ip == gateway_interface.ip:
             raise ValueError(f"{role} IXIA peer and DUT gateway must differ")
+        edge_networks.append(t.cast(ipaddress.IPv6Network, peer_interface.network))
     if not (
         1 <= C.IXIA_R1_EDGE_AS <= 0xFFFFFFFF and 1 <= C.IXIA_R2_EDGE_AS <= 0xFFFFFFFF
     ):
@@ -134,13 +138,30 @@ def _validate_traffic_route_contract(
             )
         return t.cast(ipaddress.IPv6Network, network)
 
-    advertised = route_pool(
-        C.IXIA_TAIL_ADVERTISED_PREFIX,
-        C.IXIA_TAIL_ADVERTISED_PREFIX_LEN,
-        "R2 tail",
-    )
-    if C.IXIA_TAIL_ADVERTISED_PREFIX_COUNT < 1:
-        raise ValueError("TAAC_RBB_IXIA_TAIL_PREFIX_COUNT must be positive")
+    if traffic_route_prefix is None:
+        advertised = route_pool(
+            C.IXIA_TAIL_ADVERTISED_PREFIX,
+            C.IXIA_TAIL_ADVERTISED_PREFIX_LEN,
+            "R2 tail",
+        )
+        advertised_count = C.IXIA_TAIL_ADVERTISED_PREFIX_COUNT
+    else:
+        try:
+            advertised = t.cast(
+                ipaddress.IPv6Network,
+                ipaddress.ip_network(traffic_route_prefix, strict=True),
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "custom IXIA traffic route must be a canonical IPv6 prefix"
+            ) from exc
+        if advertised.version != 6:
+            raise ValueError("custom IXIA traffic route must be IPv6")
+        advertised_count = 1
+    if advertised_count < 1:
+        raise ValueError("IXIA advertised prefix count must be positive")
+    if any(advertised.overlaps(edge_network) for edge_network in edge_networks):
+        raise ValueError("IXIA advertised prefix must not overlap an edge subnet")
     if not 1 <= C.TRAFFIC_LINE_RATE_PCT <= 100:
         raise ValueError("TAAC_RBB_TRAFFIC_LINE_RATE must be in 1..100")
     if C.TRAFFIC_FRAME_SIZE < 64:
@@ -148,7 +169,9 @@ def _validate_traffic_route_contract(
     if C.IXIA_REMOTE_ROUTE_MIN_COUNT < 1:
         raise ValueError("TAAC_RBB_IXIA_REMOTE_ROUTE_MIN must be positive")
 
-    if profile.name != "srv6_3_usids":
+    # A custom route is used by another scenario sharing this IXIA plumbing.
+    # Only TC1 requires the advertised route to equal the profile tail.
+    if profile.name != "srv6_3_usids" or traffic_route_prefix is not None:
         return
     steered = ipaddress.ip_network(profile.tail_prefix, strict=True)
     if steered != advertised:
@@ -205,13 +228,24 @@ def _edge_port_config(
 
 
 def _ixia_port_configs(
-    r1: PhysicalInventory, r2: PhysicalInventory, topology: RbbTopology
+    r1: PhysicalInventory,
+    r2: PhysicalInventory,
+    topology: RbbTopology,
+    traffic_route_prefix: str | None = None,
 ) -> list[BasicPortConfig]:
     """eBGP-emulation port configs for both IXIA edges (S12-S15).
 
     The selected R1 edge supplies the source interface and eBGP session. The
     selected R2 edge advertises the one remote pool targeted by traffic.
     """
+    advertised = ipaddress.ip_network(
+        traffic_route_prefix or C.IXIA_TAIL_ADVERTISED_PREFIX, strict=True
+    )
+    advertised_count = (
+        1
+        if traffic_route_prefix is not None
+        else C.IXIA_TAIL_ADVERTISED_PREFIX_COUNT
+    )
     r1_iface = topology.r1.primary_ixia_interface
     r2_iface = topology.r2.primary_ixia_interface
     configs: list[BasicPortConfig] = []
@@ -239,10 +273,10 @@ def _ixia_port_configs(
                         multiplier=1,
                         v6_route_scale=RouteScale(
                             prefix_name=C.IXIA_TAIL_PREFIX_POOL_NAME,
-                            starting_prefixes=C.IXIA_TAIL_ADVERTISED_PREFIX,
-                            prefix_length=C.IXIA_TAIL_ADVERTISED_PREFIX_LEN,
+                            starting_prefixes=str(advertised.network_address),
+                            prefix_length=advertised.prefixlen,
                             multiplier=1,
-                            prefix_count=C.IXIA_TAIL_ADVERTISED_PREFIX_COUNT,
+                            prefix_count=advertised_count,
                             ip_address_family=ixia_types.IpAddressFamily.IPV6,
                         ),
                     ),
@@ -253,7 +287,10 @@ def _ixia_port_configs(
 
 
 def _ixia_traffic_items(
-    r1: PhysicalInventory, r2: PhysicalInventory, topology: RbbTopology
+    r1: PhysicalInventory,
+    r2: PhysicalInventory,
+    topology: RbbTopology,
+    traffic_item_name: str = C.TRAFFIC_ITEM_R1_TO_R2,
 ) -> list[BasicTrafficItemConfig]:
     """Selected R1 edge → SRv6 core → selected R2 edge."""
     r1_iface = topology.r1.primary_ixia_interface
@@ -265,7 +302,7 @@ def _ixia_traffic_items(
     )
     return [
         BasicTrafficItemConfig(
-            name=C.TRAFFIC_ITEM_R1_TO_R2,
+            name=traffic_item_name,
             src_endpoints=[
                 TrafficEndpoint(
                     name=f"{r1.device_name}:{r1_iface}", device_group_index=0
@@ -453,18 +490,30 @@ def _build_rbb_test_config(
     r2: PhysicalInventory,
     topology: RbbTopology,
     include_traffic: bool,
+    traffic_route_prefix: str | None = None,
+    traffic_item_name: str = C.TRAFFIC_ITEM_R1_TO_R2,
 ) -> TestConfig:
-    _validate_traffic_route_contract(profile, include_traffic)
+    _validate_traffic_route_contract(
+        profile, include_traffic, traffic_route_prefix=traffic_route_prefix
+    )
     r1_ixia_ports = [dut_iface for dut_iface, _ in r1.ixia_ports]
     r2_ixia_ports = [dut_iface for dut_iface, _ in r2.ixia_ports]
     chassis = topology.ixia_chassis or C.IXIA_CHASSIS
     r1_direct = _direct_ixia_connections(r1, topology.r1, chassis)
     r2_direct = _direct_ixia_connections(r2, topology.r2, chassis)
     basic_port_configs = (
-        _ixia_port_configs(r1, r2, topology) if include_traffic else None
+        _ixia_port_configs(
+            r1, r2, topology, traffic_route_prefix=traffic_route_prefix
+        )
+        if include_traffic
+        else None
     )
     basic_traffic_item_configs = (
-        _ixia_traffic_items(r1, r2, topology) if include_traffic else None
+        _ixia_traffic_items(
+            r1, r2, topology, traffic_item_name=traffic_item_name
+        )
+        if include_traffic
+        else None
     )
     return TestConfig(
         name=name,

@@ -409,7 +409,7 @@ with `--suite`:
 | --- | --- | --- |
 | `base` | Original three-uSID steering and route-owner lifecycle | Optional |
 | `state-audit` | Default full read-only common audits: OpenR route ownership/reachability and per-core NDP resolution | None |
-| `named-nhg-lifecycle` | Full Phase 2 TC-01 recursive iBGP/OpenR resolution; partial TC-02/03/04 named SRv6 NHG, admin-distance, and service-prefix lifecycle; partial TC-06/07 forward-reference lifecycle where FBOSS supports it | None |
+| `named-nhg-lifecycle` | Full Phase 2 TC-01 recursive iBGP/OpenR resolution and TC-03/04 admin-distance/service-prefix forwarding; partial TC-02 and TC-06/07 named-NHG lifecycle where FBOSS supports it | Required for TC-03/04 forwarding proof |
 | `traffic-foundation` | Phase 1 TC-05/06/07/13/14/17: bidirectional route propagation, throughput/loss, and IXIA-to-DUT counter correlation | Required |
 | `core-ecmp` | Phase 1 adapted TC-02 and full TC-03/08: reversible Open/R path selection, equal-cost RIB/FIB, and traffic on every declared core path | Required; RESTPy/TaacIxia for TC-08 |
 | `dual-stack-traffic` | Phase 1 TC-11/12 and partial TC-15: IPv4 forwarding plus concurrent bidirectional IPv4/IPv6 throughput and loss | Required |
@@ -428,7 +428,7 @@ disruption. Optional DUT bootstrap and edge setup, when explicitly requested,
 run earlier as test-configuration setup tasks and retain their normal guarded
 teardown behavior.
 
-The device-only route lifecycle suite starts with TC-01. It snapshots R2's
+The route lifecycle suite starts with TC-01. It snapshots R2's
 `bgp.json`, originates `TAAC_RBB_RECURSIVE_ROUTE_TEST_PREFIX` with the routed
 R2 loopback as its explicit iBGP next hop, and verifies on R1 that the service
 prefix is BGPD-owned, the loopback is OPENR-owned, and both resolve to the
@@ -448,7 +448,12 @@ for the OpenR-learned remote loopback through an SRv6 NHG. It verifies both
 RIB candidates, the TE_AGENT winner, exact SRv6 FIB members, and recursive
 service-prefix resolution before restoring both lifecycles. TC-04 binds the
 temporary load-bearing prefix directly to an SRv6 NHG and verifies its exact
-RIB and resolved agent-FIB state. TC-06 and TC-07 preserve the source test plan's
+RIB and resolved agent-FIB state. For TC-03 and TC-04, IXIA advertises that
+isolated load-bearing prefix from R2 and sends traffic from R1. Both cases
+require loss at or below the configured threshold and positive R1 core-egress
+and R2 post-decap edge-egress counter deltas before they pass. This forwarding
+evidence proves that the resolved route is active in hardware rather than only
+present in the agent's software FIB. TC-06 and TC-07 preserve the source test plan's
 stricter forward-reference contract: a route that names a not-yet-created NHG
 must remain as an unresolved TE_AGENT RIB candidate, then resolve into the
 agent FIB after the NHG is added. A resolved route from another client for the
@@ -456,10 +461,10 @@ same prefix does not falsely make the TE_AGENT candidate programmed. FBOSS
 versions that atomically reject a missing-NHG route report those cases as
 explicitly unsupported and SKIPPED; rejection is never accepted as a false
 TC-06/07 pass.
-This device-only batch verifies exact structured API and resolved agent-FIB
-state. TC-03 and TC-04 do not independently query ASIC objects or generate
-traffic, so their profiles are explicitly labeled PARTIAL rather than claiming
-full source-plan coverage. The suite mutates R1 route/NHG state; TC-01 and
+TC-03 and TC-04 are labeled FULL only because the suite combines exact
+structured API/RIB/FIB verification with live IXIA delivery and DUT hardware
+counter movement; constructing either playbook without IXIA is rejected. The
+suite mutates R1 route/NHG state; TC-01 and
 TC-03 also temporarily update R2 BGP configuration. Run it only on an exclusive
 testbed. Collision guards and cleanup prevent adoption or deletion of
 pre-existing operator-owned objects.
@@ -500,8 +505,8 @@ Examples for an already configured lab:
 # Device-only common-state checks.
 ./scripts/run-rbb-srv6.sh --suite state-audit
 
-# Device-only named SRv6 NHG/NHE lifecycle checks.
-./scripts/run-rbb-srv6.sh --suite named-nhg-lifecycle
+# Named SRv6 NHG/NHE lifecycle with IXIA proof for TC-03/TC-04.
+./scripts/run-rbb-srv6.sh --suite named-nhg-lifecycle --with-traffic
 
 # Traffic-backed functional suites.
 ./scripts/run-rbb-srv6.sh --suite traffic-foundation --with-traffic

@@ -2,7 +2,8 @@
 # pyre-unsafe
 """Declarative Phase-2 named SRv6 next-hop-group lifecycle profiles.
 
-The three profiles intentionally share one device-only control-plane contract:
+The profiles share one structured control-plane contract; TC-03 and TC-04 add
+mandatory IXIA forwarding and DUT counter evidence:
 
 * TC-02 programs a named NHG, adds a route that references it, and verifies
   exact SRv6 NHE, RIB, and resolved agent-FIB state.
@@ -53,6 +54,7 @@ class RbbNamedNhgCoverage(enum.Enum):
     """Coverage status against the original Phase-2 requirement."""
 
     PARTIAL = "partial"
+    FULL = "full"
 
 
 @dataclass(frozen=True)
@@ -264,16 +266,14 @@ def build_rbb_named_nhg_profiles(
     validate_rbb_topology(topology, require_ixia=False)
     members = _members(topology, srv6_profile)
     test_route_prefix = _test_route_prefix(srv6_profile)
-    common = {
-        "coverage": RbbNamedNhgCoverage.PARTIAL,
-        "members": members,
-    }
+    common = {"members": members}
     return (
         RbbNamedNhgProfile(
             testplan_id="phase2:TC-02",
             playbook_name="rbb_p2_tc02_program_named_srv6_nhg",
             title="Program and verify a named SRv6 NHG with SID-list NHEs",
             action=RbbNamedNhgAction.PROGRAM_AND_VERIFY,
+            coverage=RbbNamedNhgCoverage.PARTIAL,
             group_name=_TC02_GROUP,
             route_prefix=str(test_route_prefix),
             unmet_requirements=(
@@ -288,13 +288,10 @@ def build_rbb_named_nhg_profiles(
             playbook_name="rbb_p2_tc03_loopback_admin_distance",
             title="Prefer a loopback-to-SRv6-NHG route by admin distance",
             action=RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE,
+            coverage=RbbNamedNhgCoverage.FULL,
             group_name=_TC03_GROUP,
             route_prefix=f"{C.R2_LOOPBACK_V6}/128",
             competing_client="OPENR",
-            unmet_requirements=(
-                "agent RIB/FIB and recursive resolution are verified, but the "
-                "device-only suite does not independently query ASIC objects",
-            ),
             **common,
         ),
         RbbNamedNhgProfile(
@@ -302,12 +299,9 @@ def build_rbb_named_nhg_profiles(
             playbook_name="rbb_p2_tc04_service_prefix_srv6_nhg",
             title="Bind the load-bearing prefix to the named SRv6 NHG",
             action=RbbNamedNhgAction.BIND_SERVICE_PREFIX,
+            coverage=RbbNamedNhgCoverage.FULL,
             group_name=_TC04_GROUP,
             route_prefix=C.RECURSIVE_ROUTE_TEST_PREFIX,
-            unmet_requirements=(
-                "exact RIB/FIB resolution is verified, but data-plane forwarding "
-                "and independent ASIC readback require the traffic batch",
-            ),
             **common,
         ),
         RbbNamedNhgProfile(
@@ -315,6 +309,7 @@ def build_rbb_named_nhg_profiles(
             playbook_name="rbb_p2_tc06_named_nhg_forward_reference",
             title="Retain an unresolved named-NHG route in RIB only",
             action=RbbNamedNhgAction.FORWARD_REFERENCE,
+            coverage=RbbNamedNhgCoverage.PARTIAL,
             group_name=_FORWARD_REFERENCE_GROUP,
             route_prefix=str(test_route_prefix),
             requires_forward_reference_support=True,
@@ -331,6 +326,7 @@ def build_rbb_named_nhg_profiles(
             playbook_name="rbb_p2_tc07_resolve_named_nhg_forward_reference",
             title="Resolve a forward-reference route into the agent FIB",
             action=RbbNamedNhgAction.RESOLVE_FORWARD_REFERENCE,
+            coverage=RbbNamedNhgCoverage.PARTIAL,
             group_name=_FORWARD_REFERENCE_GROUP,
             route_prefix=str(test_route_prefix),
             requires_forward_reference_support=True,

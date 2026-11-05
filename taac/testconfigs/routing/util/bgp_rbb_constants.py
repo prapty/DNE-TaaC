@@ -204,6 +204,7 @@ ROUTE_OWNER_BGPD: str = "BGPD"
 # The qualification flow is intentionally one-way: ingress R1 to tail R2.
 # Reverse ordinary-IPv6 traffic does not add SRv6 coverage.
 TRAFFIC_ITEM_R1_TO_R2: str = "RBB_R1_TO_R2_SRV6"
+TRAFFIC_ITEM_NAMED_NHG: str = "RBB_R1_TO_R2_NAMED_NHG"
 ALL_TRAFFIC_ITEMS: tuple[str, ...] = (TRAFFIC_ITEM_R1_TO_R2,)
 
 # ─── Timing ───────────────────────────────────────────────────────────────

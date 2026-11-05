@@ -21,6 +21,7 @@ def _step(
     head_hostname: str,
     tail_hostname: str,
     action: str,
+    baseline_route_expected: bool = False,
 ) -> Step:
     return create_run_task_step(
         task_name=_TASK_NAME,
@@ -30,6 +31,7 @@ def _step(
             "tail_hostname": tail_hostname,
             "route_prefix": profile.route_prefix,
             "recursive_next_hop": profile.recursive_next_hop,
+            "baseline_route_expected": baseline_route_expected,
         },
         description=f"[{profile.testplan_id}] {action} recursive iBGP route",
         start_traffic=False,
@@ -41,30 +43,65 @@ def create_rbb_recursive_route_playbook(
     *,
     r1_hostname: str,
     r2_hostname: str,
+    baseline_route_expected: bool = False,
 ) -> Playbook:
     if not r1_hostname.strip() or not r2_hostname.strip() or r1_hostname == r2_hostname:
         raise ValueError("TC-01 requires distinct R1 and R2 hostnames")
     stages = [
         create_steps_stage(
-            steps=[_step(profile, r1_hostname, r2_hostname, "precheck")],
-            description=f"{profile.testplan_id}: prove test resources are pristine",
+            steps=[
+                _step(
+                    profile,
+                    r1_hostname,
+                    r2_hostname,
+                    "precheck",
+                    baseline_route_expected,
+                )
+            ],
+            description=(
+                f"{profile.testplan_id}: validate the pre-run route baseline"
+            ),
         ),
         create_steps_stage(
-            steps=[_step(profile, r1_hostname, r2_hostname, "install")],
+            steps=[
+                _step(
+                    profile,
+                    r1_hostname,
+                    r2_hostname,
+                    "install",
+                    baseline_route_expected,
+                )
+            ],
             description=(
                 f"{profile.testplan_id}: originate service prefix with remote "
                 "loopback next hop"
             ),
         ),
         create_steps_stage(
-            steps=[_step(profile, r1_hostname, r2_hostname, "verify")],
+            steps=[
+                _step(
+                    profile,
+                    r1_hostname,
+                    r2_hostname,
+                    "verify",
+                    baseline_route_expected,
+                )
+            ],
             description=(
                 f"{profile.testplan_id}: verify BGPD-to-OPENR recursive resolution"
             ),
         ),
         create_steps_stage(
-            steps=[_step(profile, r1_hostname, r2_hostname, "cleanup")],
-            description=f"{profile.testplan_id}: restore BGP baseline and withdrawal",
+            steps=[
+                _step(
+                    profile,
+                    r1_hostname,
+                    r2_hostname,
+                    "cleanup",
+                    baseline_route_expected,
+                )
+            ],
+            description=f"{profile.testplan_id}: restore the exact BGP baseline",
         ),
     ]
     return Playbook(
@@ -73,7 +110,15 @@ def create_rbb_recursive_route_playbook(
         prechecks=[],
         postchecks=[],
         stages=stages,
-        cleanup_steps=[_step(profile, r1_hostname, r2_hostname, "cleanup")],
+        cleanup_steps=[
+            _step(
+                profile,
+                r1_hostname,
+                r2_hostname,
+                "cleanup",
+                baseline_route_expected,
+            )
+        ],
         traffic_items_to_start=None,
         device_regexes=[f"^{re.escape(r1_hostname)}$"],
     )

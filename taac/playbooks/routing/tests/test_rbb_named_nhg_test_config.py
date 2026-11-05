@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # pyre-unsafe
-"""Integration tests for the device-only named SRv6 NHG TestConfig."""
+"""Integration tests for the named SRv6 NHG TestConfig."""
 
 import runpy
 import unittest
@@ -52,17 +52,29 @@ class RbbNamedNhgTestConfigTest(unittest.TestCase):
             ],
         )
 
-    def test_device_only_config_does_not_reserve_or_configure_ixia(self) -> None:
+    def test_default_config_reserves_and_configures_ixia(self) -> None:
         config = create_rbb_named_nhg_test_config(_topology())
 
-        self.assertTrue(config.skip_ixia_protocol_verification)
-        self.assertIsNone(config.basic_port_configs)
-        self.assertIsNone(config.basic_traffic_item_configs)
+        self.assertFalse(config.skip_ixia_protocol_verification)
+        self.assertEqual(len(config.basic_port_configs or []), 2)
+        self.assertEqual(
+            [item.name for item in config.basic_traffic_item_configs or []],
+            ["RBB_R1_TO_R2_NAMED_NHG"],
+        )
+        tail_port = (config.basic_port_configs or [])[1]
+        advertised = (
+            tail_port.device_group_configs[0]
+            .v6_bgp_config.route_scales[0]
+            .v6_route_scale
+        )
+        self.assertEqual(advertised.starting_prefixes, "2001:db8:ff01::")
+        self.assertEqual(advertised.prefix_length, 64)
+        self.assertEqual(advertised.prefix_count, 1)
         self.assertEqual(len(config.endpoints), 2)
         for endpoint in config.endpoints:
-            self.assertFalse(endpoint.ixia_needed)
-            self.assertIsNone(endpoint.ixia_ports)
-            self.assertIsNone(endpoint.direct_ixia_connections)
+            self.assertTrue(endpoint.ixia_needed)
+            self.assertTrue(endpoint.ixia_ports)
+            self.assertTrue(endpoint.direct_ixia_connections)
 
     def test_explicit_selection_keeps_catalog_order(self) -> None:
         config = create_rbb_named_nhg_test_config(
@@ -86,6 +98,8 @@ class RbbNamedNhgTestConfigTest(unittest.TestCase):
             [playbook.name for playbook in config.playbooks],
             ["rbb_p2_tc01_recursive_route"],
         )
+        self.assertTrue(config.skip_ixia_protocol_verification)
+        self.assertIsNone(config.basic_traffic_item_configs)
 
     def test_tc03_tc04_selection_reuses_infrastructure(self) -> None:
         config = create_rbb_named_nhg_test_config(
@@ -98,6 +112,11 @@ class RbbNamedNhgTestConfigTest(unittest.TestCase):
                 "rbb_p2_tc03_loopback_admin_distance",
                 "rbb_p2_tc04_service_prefix_srv6_nhg",
             ],
+        )
+        self.assertFalse(config.skip_ixia_protocol_verification)
+        self.assertEqual(
+            [item.name for item in config.basic_traffic_item_configs or []],
+            ["RBB_R1_TO_R2_NAMED_NHG"],
         )
 
     def test_empty_selection_is_rejected(self) -> None:

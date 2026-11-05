@@ -111,11 +111,17 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
             self.profiles[1],
             r1_hostname="r1.example",
             r2_hostname="r2.example",
+            topology=_topology(),
+            include_traffic=True,
         )
         tasks = _stage_tasks(playbook)
 
         self.assertEqual(
-            [(name, params["action"]) for name, params in tasks],
+            [
+                (name, params["action"])
+                for name, params in tasks
+                if name in {"rbb_recursive_route", "rbb_srv6_named_nhg"}
+            ],
             [
                 ("rbb_recursive_route", "precheck"),
                 ("rbb_srv6_named_nhg", "precheck"),
@@ -147,16 +153,34 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
             and params["action"] == "verify_programmed"
         )
         self.assertEqual(named_verify["competing_client"], "OPENR")
-        self.assertEqual(len(playbook.cleanup_steps), 2)
+        self.assertEqual(len(playbook.cleanup_steps), 3)
+        self.assertEqual(playbook.traffic_items_to_start, ["RBB_R1_TO_R2_NAMED_NHG"])
+        counter_actions = [
+            params["action"]
+            for name, params in tasks
+            if name == "rbb_srv6_counter_delta"
+        ]
+        self.assertEqual(
+            counter_actions,
+            ["snapshot", "snapshot", "assert", "assert"],
+        )
 
     def test_tc04_binds_service_prefix_with_existing_named_nhg_lifecycle(self) -> None:
         playbook = create_rbb_named_nhg_playbook(
-            self.profiles[2], r1_hostname="r1.example"
+            self.profiles[2],
+            r1_hostname="r1.example",
+            r2_hostname="r2.example",
+            topology=_topology(),
+            include_traffic=True,
         )
         tasks = _stage_tasks(playbook)
 
         self.assertEqual(
-            [params["action"] for _, params in tasks],
+            [
+                params["action"]
+                for name, params in tasks
+                if name == "rbb_srv6_named_nhg"
+            ],
             [
                 "precheck",
                 "program_nhg",
@@ -169,27 +193,50 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
         self.assertTrue(
             all(
                 params["route_prefix"] == self.profiles[2].route_prefix
-                for _, params in tasks
+                for name, params in tasks
+                if name == "rbb_srv6_named_nhg"
             )
         )
+        self.assertEqual(playbook.traffic_items_to_start, ["RBB_R1_TO_R2_NAMED_NHG"])
+        self.assertEqual(
+            [
+                params["action"]
+                for name, params in tasks
+                if name == "rbb_srv6_counter_delta"
+            ],
+            ["snapshot", "snapshot", "assert", "assert"],
+        )
 
-    def test_every_playbook_is_device_only_and_has_owned_cleanup(self) -> None:
+    def test_every_playbook_has_owned_cleanup(self) -> None:
         for profile in self.profiles:
             with self.subTest(profile=profile.testplan_id):
                 playbook = create_rbb_named_nhg_playbook(
                     profile,
                     r1_hostname="r1.example",
                     r2_hostname="r2.example",
+                    topology=_topology(),
+                    include_traffic=profile.action
+                    in {
+                        RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE,
+                        RbbNamedNhgAction.BIND_SERVICE_PREFIX,
+                    },
                 )
-                self.assertIsNone(playbook.traffic_items_to_start)
                 self.assertEqual(playbook.device_regexes, ["^r1\\.example$"])
                 expected_cleanup_steps = (
-                    2
+                    3
                     if profile.action is RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE
+                    else 2
+                    if profile.action is RbbNamedNhgAction.BIND_SERVICE_PREFIX
                     else 1
                 )
                 self.assertEqual(len(playbook.cleanup_steps), expected_cleanup_steps)
-                name, params = _payload(playbook.cleanup_steps[0])
+                cleanup_task = next(
+                    step
+                    for step in playbook.cleanup_steps
+                    if step.name == taac_types.StepName.RUN_TASK_STEP
+                    and _payload(step)[0] == "rbb_srv6_named_nhg"
+                )
+                name, params = _payload(cleanup_task)
                 self.assertEqual(name, "rbb_srv6_named_nhg")
                 self.assertEqual(params["action"], "cleanup")
                 self.assertEqual(params["hostname"], "r1.example")
@@ -198,6 +245,16 @@ class RbbNamedNhgPlaybookTest(unittest.TestCase):
     def test_rejects_empty_hostname(self) -> None:
         with self.assertRaisesRegex(ValueError, "R1 hostname"):
             create_rbb_named_nhg_playbook(self.profiles[0], r1_hostname="")
+
+    def test_full_cases_refuse_device_only_construction(self) -> None:
+        for profile in self.profiles[1:3]:
+            with self.subTest(profile=profile.testplan_id):
+                with self.assertRaisesRegex(ValueError, "requires IXIA traffic"):
+                    create_rbb_named_nhg_playbook(
+                        profile,
+                        r1_hostname="r1.example",
+                        r2_hostname="r2.example",
+                    )
 
 
 if __name__ == "__main__":

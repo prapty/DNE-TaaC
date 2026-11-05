@@ -34,17 +34,25 @@ def _topology() -> RbbTopology:
 
 
 class RbbNamedNhgProfilesTest(unittest.TestCase):
-    def test_catalog_is_partial_and_dependency_ordered(self) -> None:
+    def test_catalog_records_full_tc03_tc04_and_dependency_order(self) -> None:
         profiles = build_rbb_named_nhg_profiles(_topology())
 
         self.assertEqual(
             tuple(profile.testplan_id for profile in profiles),
             NAMED_NHG_SUITE_TESTPLAN_IDS,
         )
-        self.assertTrue(
-            all(profile.coverage is RbbNamedNhgCoverage.PARTIAL for profile in profiles)
+        self.assertEqual(
+            tuple(profile.coverage for profile in profiles),
+            (
+                RbbNamedNhgCoverage.PARTIAL,
+                RbbNamedNhgCoverage.FULL,
+                RbbNamedNhgCoverage.FULL,
+                RbbNamedNhgCoverage.PARTIAL,
+                RbbNamedNhgCoverage.PARTIAL,
+            ),
         )
-        self.assertTrue(all(profile.unmet_requirements for profile in profiles))
+        self.assertFalse(profiles[1].unmet_requirements)
+        self.assertFalse(profiles[2].unmet_requirements)
         self.assertEqual(
             tuple(profile.action for profile in profiles),
             (

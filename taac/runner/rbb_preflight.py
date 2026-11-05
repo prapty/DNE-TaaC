@@ -20,7 +20,10 @@ import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from taac.ixia.ixnetwork_restpy_constants import ALLOWED_IPV4_ADVERTISEMENTS
+from taac.ixia.ixnetwork_restpy_constants import (
+    ALLOWED_IPV4_ADVERTISEMENTS,
+    ALLOWED_IPV6_ADVERTISEMENTS,
+)
 from taac.runner.oss_exceptions import OSSConfigError
 from taac.runner.oss_secrets import get_oss_dut_credentials, load_oss_secrets
 from taac.testconfigs.routing.util.bgp_rbb_limits import (
@@ -581,6 +584,35 @@ def _advertised_ipv6_range(
 
 
 def _validate_traffic_contract(suite: str) -> None:
+    if suite == "named-nhg-lifecycle":
+        try:
+            prefix = ipaddress.ip_network(
+                os.environ.get(
+                    "TAAC_RBB_RECURSIVE_ROUTE_TEST_PREFIX", "2001:db8:ff01::/64"
+                ),
+                strict=True,
+            )
+        except ValueError as exc:
+            raise OSSConfigError(
+                "TAAC_RBB_RECURSIVE_ROUTE_TEST_PREFIX must be canonical"
+            ) from exc
+        if prefix.version != 6:
+            raise OSSConfigError(
+                "TAAC_RBB_RECURSIVE_ROUTE_TEST_PREFIX must use IPv6"
+            )
+        skip_allowlist = os.environ.get(
+            "TAAC_RBB_SKIP_ADVERTISED_PREFIXES_CHECK", ""
+        ).lower() in ("1", "true", "yes")
+        if not skip_allowlist and not any(
+            prefix.subnet_of(allowed) for allowed in ALLOWED_IPV6_ADVERTISEMENTS
+        ):
+            raise OSSConfigError(
+                "TAAC_RBB_RECURSIVE_ROUTE_TEST_PREFIX is outside TAAC's IXIA "
+                "advertisement allowlist; use an allowlisted range or set "
+                "TAAC_RBB_SKIP_ADVERTISED_PREFIXES_CHECK=1 for an owned "
+                "isolated-lab prefix"
+            )
+        return
     try:
         advertised, count, tail_last = _advertised_ipv6_range(
             start=os.environ["TAAC_RBB_IXIA_TAIL_PREFIX"],
@@ -675,12 +707,17 @@ def run_preflight(
                 "TAAC_IXIA_API_SERVER",
                 "TAAC_IXIA_USERNAME",
                 "TAAC_IXIA_PASSWORD",
-                "TAAC_RBB_IXIA_TAIL_PREFIX",
-                "TAAC_RBB_IXIA_TAIL_PREFIX_LEN",
-                "TAAC_RBB_IXIA_TAIL_PREFIX_COUNT",
-                "TAAC_RBB_TAIL_PREFIX",
             }
         )
+        if suite != "named-nhg-lifecycle":
+            required.update(
+                {
+                    "TAAC_RBB_IXIA_TAIL_PREFIX",
+                    "TAAC_RBB_IXIA_TAIL_PREFIX_LEN",
+                    "TAAC_RBB_IXIA_TAIL_PREFIX_COUNT",
+                    "TAAC_RBB_TAIL_PREFIX",
+                }
+            )
     _require_values(required)
     if setup_dut_edges and not with_traffic:
         raise OSSConfigError("--setup-dut-edges requires --with-traffic")

@@ -723,7 +723,7 @@ class TestRbbPreflight(TestCase):
             ),
             (
                 "named-nhg-lifecycle",
-                [],
+                ["--with-traffic"],
                 "/workspace/examples/rbb_named_nhg_config.py",
                 "",
             ),
@@ -799,8 +799,8 @@ class TestRbbPreflight(TestCase):
                 "device-only",
             ),
             (
-                ["--suite", "named-nhg-lifecycle", "--with-traffic"],
-                "device-only",
+                ["--suite", "named-nhg-lifecycle"],
+                "requires --with-traffic",
             ),
         ):
             with self.subTest(arguments=arguments):

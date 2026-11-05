@@ -14,12 +14,14 @@ from taac.playbooks.routing.factories.qual_rbb.rbb_named_nhg_playbook import (
 from taac.playbooks.routing.factories.qual_rbb.rbb_recursive_route_playbook import (
     create_rbb_recursive_route_playbook,
 )
+from taac.testconfigs.routing.util import bgp_rbb_constants as C
 from taac.testconfigs.routing.factories.qual_rbb.rbb_srv6_test_config import (
     _build_rbb_test_config,
     _resolve_topology,
 )
 from taac.testconfigs.routing.util.bgp_rbb_lab_wiring import build_rbb_inventories
 from taac.testconfigs.routing.util.bgp_rbb_named_nhg_profiles import (
+    RbbNamedNhgAction,
     build_rbb_named_nhg_profiles,
     select_rbb_named_nhg_profiles,
 )
@@ -38,16 +40,20 @@ def create_rbb_named_nhg_test_config(
     name: str = "RBB_NAMED_NHG_LIFECYCLE_TEST",
     testplan_ids: t.Iterable[str] | None = None,
 ) -> TestConfig:
-    """Build the device-only TC-01/02/03/04/06/07 route lifecycle suite.
+    """Build the TC-01/02/03/04/06/07 route lifecycle suite.
 
     The suite reuses the two-DUT topology and optional transactional bootstrap,
-    but never reserves IXIA. Each playbook owns and removes its TE_AGENT route
-    and named NHG. TC-06/TC-07 remain independently selectable and self-cleaning.
+    TC-03 and TC-04 reserve IXIA and require lossless forwarding plus DUT
+    counter movement. Other independently selected cases remain device-only.
+    Every playbook owns and removes its TE_AGENT route and named NHG.
     """
-    topology = _resolve_topology(topology, include_traffic=False)
     requested = tuple(testplan_ids) if testplan_ids is not None else None
     if requested is not None and len(requested) != len(set(requested)):
         raise ValueError("duplicate route-lifecycle testplan IDs in selection")
+    include_traffic = requested is None or bool(
+        {"phase2:TC-03", "phase2:TC-04"}.intersection(requested)
+    )
+    topology = _resolve_topology(topology, include_traffic=include_traffic)
     include_tc01 = requested is None or RECURSIVE_ROUTE_PROFILE.testplan_id in requested
     named_ids = (
         None
@@ -80,6 +86,7 @@ def create_rbb_named_nhg_test_config(
                         RECURSIVE_ROUTE_PROFILE,
                         r1_hostname=r1.device_name,
                         r2_hostname=r2.device_name,
+                        baseline_route_expected=include_traffic,
                     )
                 ]
                 if include_tc01
@@ -90,6 +97,15 @@ def create_rbb_named_nhg_test_config(
                     profile,
                     r1_hostname=r1.device_name,
                     r2_hostname=r2.device_name,
+                    topology=topology,
+                    include_traffic=(
+                        include_traffic
+                        and profile.action
+                        in {
+                            RbbNamedNhgAction.ADMIN_DISTANCE_OVERRIDE,
+                            RbbNamedNhgAction.BIND_SERVICE_PREFIX,
+                        }
+                    ),
                 )
                 for profile in selected
             ],
@@ -97,7 +113,11 @@ def create_rbb_named_nhg_test_config(
         r1=r1,
         r2=r2,
         topology=topology,
-        include_traffic=False,
+        include_traffic=include_traffic,
+        traffic_route_prefix=(
+            RECURSIVE_ROUTE_PROFILE.route_prefix if include_traffic else None
+        ),
+        traffic_item_name=C.TRAFFIC_ITEM_NAMED_NHG,
     )
 
 

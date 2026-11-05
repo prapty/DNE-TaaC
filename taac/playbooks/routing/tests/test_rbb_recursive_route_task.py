@@ -158,6 +158,37 @@ class RbbRecursiveRouteTaskTest(unittest.IsolatedAsyncioTestCase):
         )
         driver.async_restart_service.assert_awaited_once()
 
+    async def test_ixia_baseline_requires_one_bgpd_route_and_resolved_fib(self) -> None:
+        driver = MagicMock()
+        prefix = "2001:db8:ff01::/64"
+        driver.async_get_route_table_by_client = AsyncMock(
+            return_value=[_route(prefix)]
+        )
+        driver.async_get_route_table_details = AsyncMock(
+            return_value=[_detail(prefix, 0, (_binary("fe80::2", "fboss2001"),))]
+        )
+        task = RbbRecursiveRouteTask(logger=MagicMock())
+
+        with (
+            patch(f"{_MODULE}.async_get_device_driver", AsyncMock(return_value=driver)),
+            patch(f"{_MODULE}._client_id", return_value=0),
+        ):
+            await task._assert_bgpd_present("r1.example", prefix)
+
+    async def test_ixia_baseline_rejects_missing_bgpd_route(self) -> None:
+        driver = MagicMock()
+        driver.async_get_route_table_by_client = AsyncMock(return_value=[])
+        task = RbbRecursiveRouteTask(logger=MagicMock())
+
+        with (
+            patch(f"{_MODULE}.async_get_device_driver", AsyncMock(return_value=driver)),
+            patch(f"{_MODULE}._client_id", return_value=0),
+            self.assertRaisesRegex(TestCaseFailure, "IXIA baseline BGPD route"),
+        ):
+            await task._assert_bgpd_present(
+                "r1.example", "2001:db8:ff01::/64"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -120,14 +120,17 @@ def _bgp_peer_up_step(hostname: str, peer: str, gate: str) -> Step:
     )
 
 
-def _traffic_loss_validation_step(description: str) -> Step:
+def _traffic_loss_validation_step(
+    description: str,
+    traffic_items: t.Sequence[str] = C.ALL_TRAFFIC_ITEMS,
+) -> Step:
     """Packet-loss assertion over the configured R1-to-R2 SRv6 path."""
     return create_validation_step(
         point_in_time_checks=[
             create_ixia_packet_loss_check(
                 thresholds=[
                     hc_types.PacketLossThreshold(
-                        names=list(C.ALL_TRAFFIC_ITEMS),
+                        names=list(traffic_items),
                         metric=hc_types.PacketLossMetric.PERCENTAGE,
                         str_value=C.PACKET_LOSS_THRESHOLD_PCT,
                         expect_packet_loss=False,

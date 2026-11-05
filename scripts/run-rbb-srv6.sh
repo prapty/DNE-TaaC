@@ -52,7 +52,7 @@ Examples:
   ./scripts/run-rbb-srv6.sh --setup-duts
   ./scripts/run-rbb-srv6.sh --with-traffic
   ./scripts/run-rbb-srv6.sh --suite state-audit
-  ./scripts/run-rbb-srv6.sh --suite named-nhg-lifecycle
+  ./scripts/run-rbb-srv6.sh --suite named-nhg-lifecycle --with-traffic
   ./scripts/run-rbb-srv6.sh --suite traffic-foundation --with-traffic
   ./scripts/run-rbb-srv6.sh --suite core-ecmp --with-traffic
   ./scripts/run-rbb-srv6.sh --suite dual-stack-traffic --with-traffic
@@ -153,6 +153,7 @@ case "$SUITE" in
     named-nhg-lifecycle)
         TEST_CONFIG="/workspace/examples/rbb_named_nhg_config.py"
         PLAYBOOK=""
+        SUITE_REQUIRES_TRAFFIC=1
         ;;
     traffic-foundation)
         TEST_CONFIG="/workspace/examples/rbb_traffic_foundation_config.py"
@@ -192,7 +193,7 @@ if [[ "$SUITE_REQUIRES_TRAFFIC" -eq 1 && "$WITH_TRAFFIC" -ne 1 ]]; then
     echo "Error: --suite $SUITE requires --with-traffic" >&2
     exit 2
 fi
-if [[ "$SUITE" == "state-audit" || "$SUITE" == "named-nhg-lifecycle" ]] && \
+if [[ "$SUITE" == "state-audit" ]] && \
     [[ "$WITH_TRAFFIC" -eq 1 ]]; then
     echo "Error: --suite $SUITE is device-only; omit --with-traffic" >&2
     exit 2

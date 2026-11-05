@@ -119,6 +119,7 @@ class RbbRecursiveRouteTask(BaseTask):
             "route_prefix",
             "recursive_next_hop",
             "loopback_owner",
+            "baseline_route_expected",
             "timeout_seconds",
             "poll_interval_seconds",
         }
@@ -141,6 +142,9 @@ class RbbRecursiveRouteTask(BaseTask):
         loopback_owner = str(params.get("loopback_owner", "OPENR")).strip().upper()
         if loopback_owner not in {"OPENR", "TE_AGENT"}:
             raise ValueError("loopback_owner must be OPENR or TE_AGENT")
+        baseline_route_expected = params.get("baseline_route_expected", False)
+        if type(baseline_route_expected) is not bool:
+            raise ValueError("baseline_route_expected must be a boolean")
         timeout = self._finite_number(params.get("timeout_seconds", 60), "timeout")
         interval = self._finite_number(
             params.get("poll_interval_seconds", 2), "poll interval"
@@ -149,7 +153,13 @@ class RbbRecursiveRouteTask(BaseTask):
             raise ValueError("timeout must be non-negative and poll interval positive")
 
         if action == _PRECHECK:
-            await self._precheck(head, tail, prefix, next_hop)
+            await self._precheck(
+                head,
+                tail,
+                prefix,
+                next_hop,
+                baseline_route_expected=baseline_route_expected,
+            )
         elif action == _INSTALL:
             await self._install(tail, prefix, next_hop)
         elif action == _VERIFY:
@@ -161,7 +171,14 @@ class RbbRecursiveRouteTask(BaseTask):
                 interval,
             )
         else:
-            await self._cleanup(head, tail, prefix, timeout, interval)
+            await self._cleanup(
+                head,
+                tail,
+                prefix,
+                timeout,
+                interval,
+                baseline_route_expected=baseline_route_expected,
+            )
 
     @staticmethod
     def _finite_number(value: t.Any, label: str) -> float:
@@ -191,7 +208,13 @@ class RbbRecursiveRouteTask(BaseTask):
                 )
 
     async def _precheck(
-        self, head: str, tail: str, prefix: str, next_hop: str
+        self,
+        head: str,
+        tail: str,
+        prefix: str,
+        next_hop: str,
+        *,
+        baseline_route_expected: bool = False,
     ) -> None:
         tail_driver = await async_get_device_driver(tail)
         raw = await async_read_file_or_none(tail_driver, C.BGP_CONFIG_PATH)
@@ -215,7 +238,10 @@ class RbbRecursiveRouteTask(BaseTask):
             raise TestCaseFailure(
                 f"{tail}: recursive loopback {next_hop}/128 is not originated"
             )
-        await self._assert_absent(head, prefix)
+        if baseline_route_expected:
+            await self._assert_bgpd_present(head, prefix)
+        else:
+            await self._assert_absent(head, prefix)
 
     async def _install(self, tail: str, prefix: str, next_hop: str) -> None:
         driver = await async_get_device_driver(tail)
@@ -345,8 +371,29 @@ class RbbRecursiveRouteTask(BaseTask):
         ):
             raise TestCaseFailure(f"{head}: FIB route {prefix} is still present")
 
+    async def _assert_bgpd_present(self, head: str, prefix: str) -> None:
+        """Require the IXIA-learned BGPD route and its resolved FIB entry."""
+        driver = await async_get_device_driver(head)
+        bgpd_id = _client_id("BGPD")
+        routes = _route_matches(
+            await driver.async_get_route_table_by_client(bgpd_id), prefix
+        )
+        if len(routes) != 1:
+            raise TestCaseFailure(
+                f"{head}: expected one IXIA baseline BGPD route {prefix}, "
+                f"observed {len(routes)}"
+            )
+        _fib_detail(await driver.async_get_route_table_details(), prefix, bgpd_id)
+
     async def _cleanup(
-        self, head: str, tail: str, prefix: str, timeout: float, interval: float
+        self,
+        head: str,
+        tail: str,
+        prefix: str,
+        timeout: float,
+        interval: float,
+        *,
+        baseline_route_expected: bool = False,
     ) -> None:
         driver = await async_get_device_driver(tail)
         ownership_key = f"{tail}:{prefix}"
@@ -363,9 +410,12 @@ class RbbRecursiveRouteTask(BaseTask):
         if restored:
             await driver.async_restart_service(FbossSystemctlServiceName.BGP)
         if restored or owned:
-            await self._poll(
-                lambda: self._assert_absent(head, prefix), timeout, interval
+            assertion = (
+                self._assert_bgpd_present
+                if baseline_route_expected
+                else self._assert_absent
             )
+            await self._poll(lambda: assertion(head, prefix), timeout, interval)
             self._data[ownership_key] = False
         else:
             self.logger.info(
