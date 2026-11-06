@@ -426,6 +426,10 @@ class RbbSrv6NamedNhgTask(BaseTask):
         return f"expected:group-members:{hostname}:{group_name}"
 
     @staticmethod
+    def _resolved_members_key(hostname: str, group_name: str) -> str:
+        return f"expected:resolved-fib-members:{hostname}:{group_name}"
+
+    @staticmethod
     def _anchor_key(
         hostname: str, anchor_prefix: ipaddress.IPv6Network, client: str
     ) -> str:
@@ -849,6 +853,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
         group_key = self._group_key(hostname, group_name)
         route_key = self._route_key(hostname, route_prefix, client)
         members_key = self._members_key(hostname, group_name)
+        resolved_members_key = self._resolved_members_key(hostname, group_name)
         anchor_key = (
             self._anchor_key(hostname, underlay_anchor_prefix, client)
             if underlay_anchor_prefix is not None
@@ -895,14 +900,24 @@ class RbbSrv6NamedNhgTask(BaseTask):
             next_hops = []
             expected_members: list[dict[str, t.Any]] = []
             templates = t.cast(t.Sequence[t.Mapping[str, t.Any]], members)
-            if source_next_hops is not None and len(source_next_hops) != len(templates):
-                raise TestCaseFailure(
-                    f"{hostname}: {member_source_client} route "
-                    f"{member_source_prefix.with_prefixlen} has "
-                    f"{len(source_next_hops)} next hops, but the SRv6 profile "
-                    f"declares {len(templates)} path(s)"
-                )
-            for index, template in enumerate(templates):
+            if source_next_hops is not None:
+                if len(source_next_hops) > len(templates):
+                    raise TestCaseFailure(
+                        f"{hostname}: {member_source_client} route "
+                        f"{member_source_prefix.with_prefixlen} has "
+                        f"{len(source_next_hops)} next hops, but the SRv6 profile "
+                        f"provides only {len(templates)} SID-list template(s)"
+                    )
+                # The live route contains only currently usable forwarding
+                # paths.  It may legitimately expose fewer paths than the
+                # topology declares (for example, while one core path is not
+                # selected).  Build the test NHG from that active subset so
+                # TC-04 validates the load-bearing path rather than requiring
+                # every configured core link to be active.
+                selected_templates = templates[: len(source_next_hops)]
+            else:
+                selected_templates = templates
+            for index, template in enumerate(selected_templates):
                 source = source_next_hops[index] if source_next_hops is not None else None
                 if source is None:
                     address = template["address"]
@@ -1075,6 +1090,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
                             )
 
                 source_next_hops = None
+                source_fib_next_hops: tuple[t.Any, ...] = ()
                 if member_source_client_id is not None:
                     source_route = await self._client_route(
                         agent,
@@ -1096,8 +1112,51 @@ class RbbSrv6NamedNhgTask(BaseTask):
                             f"{member_source_prefix.with_prefixlen} has no "
                             "structured forwarding next hops to clone"
                         )
+                    source_fib = await self._fib_route(
+                        agent,
+                        t.cast(ipaddress.IPv6Network, member_source_prefix),
+                    )
+                    source_fib_next_hops = tuple(
+                        getattr(source_fib, "nextHops", None) or ()
+                    )
+                    if not source_fib_next_hops:
+                        raise TestCaseFailure(
+                            f"{hostname}: {member_source_client} route "
+                            f"{member_source_prefix.with_prefixlen} has no "
+                            "resolved agent-FIB next hops to snapshot"
+                        )
 
                 group, programmed_members = _make_group(source_next_hops)
+                if source_fib_next_hops:
+                    actions = {
+                        (
+                            tuple(member["srv6_segments"]),
+                            member["tunnel_id"],
+                        )
+                        for member in programmed_members
+                    }
+                    if len(actions) != 1:
+                        raise TestCaseFailure(
+                            f"{hostname}: cannot map recursively flattened FIB "
+                            f"members for {group_name!r} because its active "
+                            "logical members use different SRv6 actions"
+                        )
+                    segments, tunnel_id = next(iter(actions))
+                    resolved_members = tuple(
+                        {
+                            "address": _packed_address(next_hop.address),
+                            "interface": (
+                                getattr(next_hop.address, "ifName", None) or None
+                            ),
+                            "weight": int(getattr(next_hop, "weight", 0)) or 1,
+                            "srv6_segments": segments,
+                            "tunnel_id": tunnel_id,
+                        }
+                        for next_hop in source_fib_next_hops
+                    )
+                    self._data[resolved_members_key] = _serializable_members(
+                        resolved_members
+                    )
                 self._data[group_key] = True
                 self._data[members_key] = _serializable_members(programmed_members)
                 add_named = getattr(agent, "addNamedNextHopGroups", None)
@@ -1125,7 +1184,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
                 )
                 self.logger.info(
                     f"{hostname} -- programmed named SRv6 NHG {group_name!r} "
-                    f"with {len(members)} member(s)"
+                    f"with {len(programmed_members)} active member(s)"
                 )
                 return
 
@@ -1288,6 +1347,23 @@ class RbbSrv6NamedNhgTask(BaseTask):
 
             if action == _VERIFY_PROGRAMMED:
                 expected_members = _shared_members()
+                expected_fib_members = (
+                    tuple(
+                        {
+                            "address": ipaddress.IPv6Address(value[0]),
+                            "interface": value[1],
+                            "weight": value[2],
+                            "srv6_segments": tuple(
+                                ipaddress.IPv6Address(segment)
+                                for segment in value[3]
+                            ),
+                            "tunnel_id": value[4],
+                        }
+                        for value in self._data[resolved_members_key]
+                    )
+                    if resolved_members_key in self._data
+                    else expected_members
+                )
                 group = await self._read_group(agent, group_name)
                 self._assert_group_matches(
                     hostname,
@@ -1316,7 +1392,7 @@ class RbbSrv6NamedNhgTask(BaseTask):
                     competing_client_id,
                     admin_distance,
                     await self._fib_route(agent, route_prefix),
-                    expected_members,
+                    expected_fib_members,
                     TunnelType.SRV6_ENCAP,
                 )
                 return

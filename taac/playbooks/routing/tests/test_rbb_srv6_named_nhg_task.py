@@ -445,15 +445,17 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
 
         agent.getNamedNextHopGroups = AsyncMock(side_effect=get_groups)
         agent.getRouteTableByClient = AsyncMock(return_value=[source])
+        agent.getRouteTable = AsyncMock(return_value=[source])
         agent.addNamedNextHopGroups = AsyncMock(side_effect=add_groups)
 
         params = {
             "member_source_client": "OPENR",
             "member_source_prefix": _PREFIX,
         }
+        shared = {}
         with patch(_DRIVER_PATH, new_callable=AsyncMock, return_value=_driver(agent)):
             await RbbSrv6NamedNhgTask(
-                hostname=_HOST, logger=MagicMock(), shared_data={}
+                hostname=_HOST, logger=MagicMock(), shared_data=shared
             ).run(_params("program_nhg", include_members=True, **params))
 
         programmed = state["group"].nexthops[0]
@@ -463,6 +465,95 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(programmed.cost, 1)
         self.assertEqual(programmed.role, NextHopRole.PRIMARY)
         self.assertTrue(programmed.srv6SegmentList)
+        resolved_key = RbbSrv6NamedNhgTask._resolved_members_key(_HOST, _GROUP)
+        self.assertTrue(
+            any(key.endswith(resolved_key) for key in shared),
+            shared,
+        )
+
+    async def test_program_nhg_uses_active_subset_of_profile_paths(self) -> None:
+        from facebook.network.Address.types import BinaryAddress
+
+        state = {"group": None}
+        source = SimpleNamespace(
+            dest=_dest(),
+            nextHops=[
+                SimpleNamespace(
+                    address=BinaryAddress(
+                        addr=ipaddress.ip_address("fe80::2").packed,
+                        ifName="fboss2011",
+                    ),
+                    weight=0,
+                )
+            ],
+        )
+        agent = MagicMock()
+
+        async def get_groups(_names):
+            return [state["group"]] if state["group"] is not None else []
+
+        async def add_groups(groups):
+            supplied = groups[0]
+            state["group"] = SimpleNamespace(
+                name=supplied.name,
+                nexthops=list(supplied.nexthops),
+                isProgrammed=False,
+            )
+
+        agent.getNamedNextHopGroups = AsyncMock(side_effect=get_groups)
+        agent.getRouteTableByClient = AsyncMock(return_value=[source])
+        resolved = SimpleNamespace(
+            dest=_dest(),
+            nextHops=[
+                SimpleNamespace(
+                    address=BinaryAddress(
+                        addr=ipaddress.ip_address("fe80::2").packed,
+                        ifName="fboss2011",
+                    ),
+                    weight=0,
+                ),
+                SimpleNamespace(
+                    address=BinaryAddress(
+                        addr=ipaddress.ip_address("fe80::3").packed,
+                        ifName="fboss2012",
+                    ),
+                    weight=0,
+                ),
+            ],
+        )
+        agent.getRouteTable = AsyncMock(return_value=[resolved])
+        agent.addNamedNextHopGroups = AsyncMock(side_effect=add_groups)
+        members = [
+            *_MEMBERS,
+            {
+                "address": "2001:db8:13::2",
+                "weight": 1,
+                "srv6_segments": ["fdad:ffff:27d6:7fff::"],
+                "tunnel_id": "srv6_tunnel",
+            },
+        ]
+        params = {
+            "member_source_client": "BGPD",
+            "member_source_prefix": _PREFIX,
+            "members": members,
+        }
+
+        shared = {}
+        with patch(_DRIVER_PATH, new_callable=AsyncMock, return_value=_driver(agent)):
+            await RbbSrv6NamedNhgTask(
+                hostname=_HOST, logger=MagicMock(), shared_data=shared
+            ).run(_params("program_nhg", **params))
+
+        self.assertEqual(len(state["group"].nexthops), 1)
+        self.assertEqual(
+            state["group"].nexthops[0].address.addr,
+            source.nextHops[0].address.addr,
+        )
+        resolved_key = RbbSrv6NamedNhgTask._resolved_members_key(_HOST, _GROUP)
+        resolved_values = next(
+            value for key, value in shared.items() if key.endswith(resolved_key)
+        )
+        self.assertEqual(len(resolved_values), 2)
 
     async def test_underlay_anchor_primes_global_nexthop_and_cleans_up_last(
         self,

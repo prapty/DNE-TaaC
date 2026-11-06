@@ -446,20 +446,19 @@ class RbbSrv6CounterDeltaTaskTest(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_assert_rejects_background_delta_against_reference(self) -> None:
-        shared = {
-            "rbb-r1:encap:delta": 1_000_000,
-            "rbb-r2:decap": 500,
-        }
+        shared = {}
         task = RbbSrv6CounterDeltaTask(
             hostname="rbb-r2", logger=MagicMock(), shared_data=shared
         )
+        task._data["rbb-r1:encap:delta"] = 1_000_000
+        task._data["rbb-r2:decap"] = 500
         with (
             patch(
                 _COUNTER_PATH,
                 new_callable=AsyncMock,
                 return_value=self._driver("out 526"),
             ),
-            self.assertRaisesRegex(TestCaseFailure, "reference delta"),
+            self.assertRaisesRegex(TestCaseFailure, "only .* of the reference"),
         ):
             await task.run(
                 {

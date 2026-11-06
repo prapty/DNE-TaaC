@@ -163,7 +163,15 @@ class RbbSrv6CounterDeltaTask(BaseTask):
 
         if min_reference_ratio:
             reference_key = f"{reference_hostname}:{reference_direction}:delta"
-            reference_delta = self._data.get(reference_key)
+            # _data can be BaseTask's prefixed shared-data view.  That view
+            # implements membership and indexed lookup, while dict.get()
+            # would read the wrapper's empty local dict instead of the shared
+            # backing store.
+            reference_delta = (
+                self._data[reference_key]
+                if reference_key in self._data
+                else None
+            )
             if reference_delta is None:
                 raise TestCaseFailure(
                     f"[{gate}] no asserted reference delta recorded for "
