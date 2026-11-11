@@ -221,6 +221,7 @@ _RBB_SUITES = frozenset(
         "core-ecmp",
         "dual-stack-traffic",
         "tail-decap",
+        "mysid-validation",
         "resilience",
     )
 )
@@ -709,6 +710,8 @@ def run_preflight(
                 "TAAC_IXIA_PASSWORD",
             }
         )
+    if suite == "mysid-validation":
+        required.add("TAAC_RBB_R2_MAC")
         if suite != "named-nhg-lifecycle":
             required.update(
                 {

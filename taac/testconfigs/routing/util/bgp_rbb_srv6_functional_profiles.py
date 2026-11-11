@@ -11,13 +11,13 @@ preconditions are materially different:
 * TC-105 removes a controller NHG and requires an OpenR service fallback.
 * TC-106 injects an unknown uSID and proves an exact local-SID miss drop.
 
-PR #46's two-node bootstrap safely provides the complete forward-path state
-needed by TC-24.  It does not provide a transactional 16K MySID programmer or
-the reverse R2-head/R1-tail service required by TC-102, an OpenR-owned service
-fallback for TC-105, or the raw unknown-uSID/local-SID-drop evidence pair for
-TC-106.  This module therefore exports a runnable TC-24 profile and explicit
-blocked assessments for the other cases. A blocked case is never silently
-reduced to a weaker test.
+PR #46's two-node bootstrap provides the forward-path state used by TC-16,
+TC-17, TC-18, and TC-24. RAW IXIA injection plus FBOSS's SAI-backed ingress
+debug counters close TC-32 and TC-106 without weakening either negative case
+to packet loss alone.
+The topology still lacks the transactional scale and reverse/fallback service
+contracts required by TC-23, TC-102, and TC-105, which remain explicitly
+blocked rather than silently reduced to weaker tests.
 """
 
 from __future__ import annotations
@@ -79,6 +79,50 @@ class Srv6CaseAssessment:
 
 SRV6_FUNCTIONAL_CASES: t.Mapping[str, Srv6CaseAssessment] = types.MappingProxyType(
     {
+        "phase2:TC-16": Srv6CaseAssessment(
+            testplan_id="phase2:TC-16",
+            title="End.uA midpoint processing",
+            readiness=Srv6CaseReadiness.RUNNABLE,
+            factory="create_rbb_srv6_mysid_test_config",
+            evidence=(
+                "the exact R2 uA MySID prefix is resolved and present in ASIC state",
+                "the R1 route carries the exact midpoint-head-tail uSID container",
+                (
+                    "lossless IXIA traffic increments both the R2 midpoint and "
+                    "post-decap edge counters with correlated deltas"
+                ),
+            ),
+        ),
+        "phase2:TC-17": Srv6CaseAssessment(
+            testplan_id="phase2:TC-17",
+            title="Midpoint MySID table support",
+            readiness=Srv6CaseReadiness.RUNNABLE,
+            factory="create_rbb_srv6_mysid_test_config",
+            evidence=(
+                "the exact midpoint uA MySID is resolved in software",
+                "the midpoint SID is present in the SAI SRV6 object dump",
+                "lossless IXIA traffic increments the R2 midpoint egress counter",
+            ),
+        ),
+        "phase2:TC-18": Srv6CaseAssessment(
+            testplan_id="phase2:TC-18",
+            title="MySID LPM shift-and-forward",
+            readiness=Srv6CaseReadiness.RUNNABLE,
+            factory="create_rbb_srv6_mysid_test_config",
+            evidence=(
+                (
+                    "the exact R2 and R1 uA MySID prefixes and behaviors are "
+                    "resolved in software and "
+                    "visible in the ASIC SRV6 object dump"
+                ),
+                "the R1 route carries the exact midpoint-head-tail uSID container",
+                (
+                    "correlated counters prove R2 midpoint egress, R1 shifted "
+                    "ingress/head egress, and R2 tail ingress"
+                ),
+                "IXIA observes successful final delivery with bounded packet loss",
+            ),
+        ),
         "phase2:TC-23": Srv6CaseAssessment(
             testplan_id="phase2:TC-23",
             title="16K End.DT46 MySID scale",
@@ -112,6 +156,17 @@ SRV6_FUNCTIONAL_CASES: t.Mapping[str, Srv6CaseAssessment] = types.MappingProxyTy
                     "IXIA reports no loss while R1 core-egress and R2 edge-egress "
                     "counters increase"
                 ),
+            ),
+        ),
+        "phase2:TC-32": Srv6CaseAssessment(
+            testplan_id="phase2:TC-32",
+            title="SRv6 local-SID-drop telemetry",
+            readiness=Srv6CaseReadiness.RUNNABLE,
+            factory="create_rbb_srv6_mysid_test_config",
+            evidence=(
+                "IXIA injects a configured midpoint SID with no uSID continuation",
+                "IXIA observes complete loss while transmit remains active",
+                "the SAI-backed in_srv6_mysid_discards ingress counter increases",
             ),
         ),
         "phase2:TC-102": Srv6CaseAssessment(
@@ -158,23 +213,18 @@ SRV6_FUNCTIONAL_CASES: t.Mapping[str, Srv6CaseAssessment] = types.MappingProxyTy
         "phase2:TC-106": Srv6CaseAssessment(
             testplan_id="phase2:TC-106",
             title="Unknown-uSID clean-drop handling",
-            readiness=Srv6CaseReadiness.BLOCKED,
-            unmet_requirements=(
+            readiness=Srv6CaseReadiness.RUNNABLE,
+            factory="create_rbb_srv6_mysid_test_config",
+            evidence=(
                 (
-                    "TAAC has generic RAW packet support, but no RBB SRv6 packet "
-                    "builder that selects a uSID proven absent from every DUT "
-                    "MySID entry and injects it on the declared ingress"
+                    "IXIA injects a locator-local uSID distinct from every "
+                    "configured MySID"
                 ),
                 (
-                    "there is no portable exact local-SID miss/drop counter "
-                    "primitive; the current R2 edge-egress delta is delivery "
-                    "evidence and cannot prove a local-SID drop"
+                    "IXIA observes complete loss while the ingress null-discard "
+                    "counter increases"
                 ),
-                (
-                    "expected IXIA loss alone cannot distinguish a clean drop from "
-                    "a loop or leak; bounded capture/counter evidence across the "
-                    "possible egresses is still required"
-                ),
+                "all possible R2 egress packet deltas remain below a strict bound",
             ),
         ),
     }

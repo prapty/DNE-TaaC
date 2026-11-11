@@ -390,11 +390,12 @@ TAAC's existing global IXIA advertisement allowlist stays enabled by default.
 If an isolated lab uses an explicitly owned prefix outside that allowlist, set
 `TAAC_RBB_SKIP_ADVERTISED_PREFIXES_CHECK=1` in `rbb.env`. This opt-out applies
 only to the RBB TestConfig; preflight and the factory still restrict IXIA to
-the single exact IPv6 prefix above for the base, tail-decap, and resilience
-suites. The traffic-foundation and core-ECMP suites instead validate their
-explicitly declared, non-overlapping IPv6 head and tail prefix ranges. The
-dual-stack suite validates those ranges plus independent, non-overlapping IPv4
-pools. Its IPv4 defaults are inside TAAC's existing 10.100.75.0/24 IXIA
+the single exact IPv6 prefix above for the base, tail-decap, mysid-validation,
+and resilience suites. The traffic-foundation and core-ECMP suites instead
+validate their explicitly declared, non-overlapping IPv6 head and tail prefix
+ranges. The dual-stack suite validates those ranges plus independent,
+non-overlapping IPv4 pools. Its IPv4 defaults are inside TAAC's existing
+10.100.75.0/24 IXIA
 advertisement allowlist; a different owned lab range requires the same explicit
 opt-out above.
 
@@ -414,6 +415,7 @@ with `--suite`:
 | `core-ecmp` | Phase 1 adapted TC-02 and full TC-03/08: reversible Open/R path selection, equal-cost RIB/FIB, and traffic on every declared core path | Required; RESTPy/TaacIxia for TC-08 |
 | `dual-stack-traffic` | Phase 1 TC-11/12 and partial TC-15: IPv4 forwarding plus concurrent bidirectional IPv4/IPv6 throughput and loss | Required |
 | `tail-decap` | Phase 2 TC-24: final-uSID decapsulation and inner-table lookup | Required |
+| `mysid-validation` | Phase 2 TC-16/17/18/32/106: End.uA and MySID LPM shift/forward, MySID forwarding, exact drop telemetry, and unknown-uSID clean drop | Required |
 | `resilience` | Phase 2 TC-15/104, partial TC-30, and adapted TC-99: warmboot, bgpd restart, and edge outage | Required; RESTPy/TaacIxia only |
 
 The TC-05/06/07 IXIA received-route assertions use IxNetwork's RESTPy learned
@@ -427,6 +429,19 @@ samples and is rejected by the capability gate before any resilience
 disruption. Optional DUT bootstrap and edge setup, when explicitly requested,
 run earlier as test-configuration setup tasks and retain their normal guarded
 teardown behavior.
+
+The MySID validation suite uses the real two-node zigzag carrier
+midpoint(R2)->head(R1)->tail(R2). TC-16 requires the exact resolved R2 End.uA
+prefix in software and ASIC state, then correlates midpoint and post-decap
+counters with lossless IXIA delivery. TC-18 temporarily installs a broader R2
+binding MySID that sends matching traffic toward an unknown uSID, verifies its
+overlap with the exact R2 uA entry, and correlates R2 midpoint egress, R1
+shifted ingress, R1 head egress, and R2 tail ingress. Each downstream leg must
+carry at least 80 percent of the midpoint reference delta. The test fails if
+the broader entry wins instead of the more-specific uA LPM match. Cleanup
+removes only the binding entry owned by that playbook run. This is full
+behavioral validation on the documented two-node adaptation; it does not claim
+a third physical midpoint.
 
 The route lifecycle suite starts with TC-01. It snapshots R2's
 `bgp.json`, originates `TAAC_RBB_RECURSIVE_ROUTE_TEST_PREFIX` with the routed
@@ -513,6 +528,7 @@ Examples for an already configured lab:
 ./scripts/run-rbb-srv6.sh --suite core-ecmp --with-traffic
 ./scripts/run-rbb-srv6.sh --suite dual-stack-traffic --with-traffic
 ./scripts/run-rbb-srv6.sh --suite tail-decap --with-traffic
+./scripts/run-rbb-srv6.sh --suite mysid-validation --with-traffic
 ./scripts/run-rbb-srv6.sh --suite resilience --with-traffic
 ```
 

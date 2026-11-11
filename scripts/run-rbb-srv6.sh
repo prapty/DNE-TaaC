@@ -39,7 +39,7 @@ Usage: ./scripts/run-rbb-srv6.sh [OPTIONS] [-- RUNNER_ARGS...]
   --image IMAGE       Use IMAGE instead of the Docker helper's default tag.
   --suite NAME        Select base (default), state-audit,
                       named-nhg-lifecycle, traffic-foundation, core-ecmp,
-                      dual-stack-traffic, tail-decap, or resilience.
+                      dual-stack-traffic, tail-decap, mysid-validation, or resilience.
   --setup-duts        Temporarily bootstrap core ports, OpenR, iBGP, and SRv6.
   --with-traffic      Run the complete SRv6 qualification with live IXIA traffic.
   --setup-dut-edges
@@ -57,6 +57,7 @@ Examples:
   ./scripts/run-rbb-srv6.sh --suite core-ecmp --with-traffic
   ./scripts/run-rbb-srv6.sh --suite dual-stack-traffic --with-traffic
   ./scripts/run-rbb-srv6.sh --suite tail-decap --with-traffic
+  ./scripts/run-rbb-srv6.sh --suite mysid-validation --with-traffic
   ./scripts/run-rbb-srv6.sh --suite resilience --with-traffic
   ./scripts/run-rbb-srv6.sh --image localhost/fboss-taac:latest --check
   ./scripts/run-rbb-srv6.sh --setup-duts --with-traffic --setup-dut-edges
@@ -175,6 +176,11 @@ case "$SUITE" in
         PLAYBOOK=""
         SUITE_REQUIRES_TRAFFIC=1
         ;;
+    mysid-validation)
+        TEST_CONFIG="/workspace/examples/rbb_srv6_mysid_config.py"
+        PLAYBOOK=""
+        SUITE_REQUIRES_TRAFFIC=1
+        ;;
     resilience)
         TEST_CONFIG="/workspace/examples/rbb_srv6_resilience_config.py"
         PLAYBOOK=""
@@ -184,7 +190,7 @@ case "$SUITE" in
         echo "Error: unknown suite '$SUITE'" >&2
         echo "Choose base, state-audit, named-nhg-lifecycle," >&2
         echo "traffic-foundation, core-ecmp, dual-stack-traffic," >&2
-        echo "tail-decap, or resilience." >&2
+        echo "tail-decap, mysid-validation, or resilience." >&2
         exit 2
         ;;
 esac

@@ -390,6 +390,33 @@ class RbbStateAuditTaskTest(unittest.IsolatedAsyncioTestCase):
                             "sid": "2001:db8:27cc::",
                             "behavior": "ADJACENCY_MICRO_SID",
                             "require_resolved": True,
+                            "prefix_length": 48,
+                        }
+                    ]
+                }
+            )
+
+    async def test_mysid_wrong_prefix_length_fails(self) -> None:
+        driver = _driver()
+        driver.async_run_cmd_on_shell.return_value = (
+            "MySid: 2001:db8:27cc::/48\n"
+            "    Type: ADJACENCY_MICRO_SID\n"
+            "    Resolved via: fe80::2@fboss2001\n"
+        )
+        task = RbbStateAuditTask(hostname="rbb-r1", logger=MagicMock())
+
+        with (
+            patch(_DRIVER, new_callable=AsyncMock, return_value=driver),
+            self.assertRaisesRegex(TestCaseFailure, "MySID"),
+        ):
+            await task.run(
+                {
+                    "mysids": [
+                        {
+                            "sid": "2001:db8:27cc::",
+                            "behavior": "ADJACENCY_MICRO_SID",
+                            "require_resolved": True,
+                            "prefix_length": 64,
                         }
                     ]
                 }

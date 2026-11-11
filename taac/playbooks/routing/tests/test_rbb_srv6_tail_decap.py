@@ -86,22 +86,44 @@ def _traffic_stage(playbook):
 
 
 class RbbSrv6FunctionalCoverageTest(unittest.TestCase):
-    def test_only_tc24_is_currently_runnable(self) -> None:
+    def test_functional_readiness_tracks_full_mysid_suite(self) -> None:
         self.assertEqual(
             set(SRV6_FUNCTIONAL_CASES),
             {
+                "phase2:TC-16",
+                "phase2:TC-17",
+                "phase2:TC-18",
                 "phase2:TC-23",
                 "phase2:TC-24",
+                "phase2:TC-32",
                 "phase2:TC-102",
                 "phase2:TC-105",
                 "phase2:TC-106",
             },
         )
-        self.assertEqual(runnable_srv6_functional_ids(), ("phase2:TC-24",))
-        self.assertIs(
-            SRV6_FUNCTIONAL_CASES["phase2:TC-24"].readiness,
-            Srv6CaseReadiness.RUNNABLE,
+        self.assertEqual(
+            runnable_srv6_functional_ids(),
+            (
+                "phase2:TC-16",
+                "phase2:TC-17",
+                "phase2:TC-18",
+                "phase2:TC-24",
+                "phase2:TC-32",
+                "phase2:TC-106",
+            ),
         )
+        for testplan_id in (
+            "phase2:TC-16",
+            "phase2:TC-17",
+            "phase2:TC-18",
+            "phase2:TC-24",
+            "phase2:TC-32",
+            "phase2:TC-106",
+        ):
+            self.assertIs(
+                SRV6_FUNCTIONAL_CASES[testplan_id].readiness,
+                Srv6CaseReadiness.RUNNABLE,
+            )
 
     def test_scale_and_bidirectional_cases_fail_closed(self) -> None:
         scale = SRV6_FUNCTIONAL_CASES["phase2:TC-23"]
@@ -135,27 +157,12 @@ class RbbSrv6FunctionalCoverageTest(unittest.TestCase):
             )
         )
 
-    def test_tc106_requires_unknown_usid_injection_and_exact_drop_evidence(
-        self,
-    ) -> None:
+    def test_tc106_has_unknown_usid_loss_drop_and_no_egress_evidence(self) -> None:
         unknown_sid = SRV6_FUNCTIONAL_CASES["phase2:TC-106"]
-        self.assertIs(unknown_sid.readiness, Srv6CaseReadiness.BLOCKED)
-        self.assertIsNone(unknown_sid.factory)
-        self.assertTrue(
-            any(
-                "generic RAW" in item and "proven absent" in item
-                for item in unknown_sid.unmet_requirements
-            )
-        )
-        self.assertTrue(
-            any(
-                "exact local-SID miss/drop counter" in item
-                for item in unknown_sid.unmet_requirements
-            )
-        )
-        self.assertTrue(
-            any("loop or leak" in item for item in unknown_sid.unmet_requirements)
-        )
+        self.assertIs(unknown_sid.readiness, Srv6CaseReadiness.RUNNABLE)
+        self.assertEqual(unknown_sid.factory, "create_rbb_srv6_mysid_test_config")
+        self.assertTrue(any("complete loss" in item for item in unknown_sid.evidence))
+        self.assertTrue(any("egress" in item for item in unknown_sid.evidence))
 
     def test_tc24_profile_is_exact_tail_state(self) -> None:
         profile = build_tail_decap_state_profile(_topology())

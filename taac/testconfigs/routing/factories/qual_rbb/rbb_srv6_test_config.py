@@ -499,6 +499,9 @@ def _build_rbb_test_config(
     traffic_route_prefix: str | None = None,
     traffic_item_name: str = C.TRAFFIC_ITEM_R1_TO_R2,
     traffic_ibgp_next_hop: str | None = None,
+    extra_traffic_items: list[BasicTrafficItemConfig] | None = None,
+    extra_setup_tasks: list[taac_types.Task] | None = None,
+    endpoint_macs: dict[str, str] | None = None,
 ) -> TestConfig:
     _validate_traffic_route_contract(
         profile, include_traffic, traffic_route_prefix=traffic_route_prefix
@@ -518,7 +521,7 @@ def _build_rbb_test_config(
     basic_traffic_item_configs = (
         _ixia_traffic_items(
             r1, r2, topology, traffic_item_name=traffic_item_name
-        )
+        ) + (extra_traffic_items or [])
         if include_traffic
         else None
     )
@@ -543,6 +546,7 @@ def _build_rbb_test_config(
             Endpoint(
                 name=r1.device_name,
                 dut=True,
+                mac_address=(endpoint_macs or {}).get(r1.device_name),
                 ixia_needed=include_traffic,
                 ixia_ports=r1_ixia_ports if include_traffic else None,
                 direct_ixia_connections=r1_direct if include_traffic else None,
@@ -550,6 +554,7 @@ def _build_rbb_test_config(
             Endpoint(
                 name=r2.device_name,
                 dut=True,
+                mac_address=(endpoint_macs or {}).get(r2.device_name),
                 ixia_needed=include_traffic,
                 ixia_ports=r2_ixia_ports if include_traffic else None,
                 direct_ixia_connections=r2_direct if include_traffic else None,
@@ -570,6 +575,7 @@ def _build_rbb_test_config(
                 include_traffic,
                 traffic_ibgp_next_hop=traffic_ibgp_next_hop,
             )
+            + (extra_setup_tasks or [])
         ),
         # Teardown runs in list order. Remove the edge overlay before restoring
         # the bootstrap's image baseline underneath it.

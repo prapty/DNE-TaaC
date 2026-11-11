@@ -503,19 +503,52 @@ class RbbSrv6CounterDeltaTaskTest(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-    async def test_assert_rejects_non_positive_minimum_before_device_read(self) -> None:
+    async def test_assert_rejects_negative_minimum_before_device_read(self) -> None:
         with patch(_COUNTER_PATH, new_callable=AsyncMock) as get_driver:  # noqa: SIM117
-            with self.assertRaisesRegex(ValueError, "at least 1"):
+            with self.assertRaisesRegex(ValueError, "non-negative"):
                 await self._task({}).run(
                     {
                         "hostname": "rbb-r1",
                         "action": "assert",
                         "counter_cmd": "show port counters",
                         "counter_regex": r"(\d+)",
-                        "min_delta": 0,
+                        "min_delta": -1,
                     }
                 )
         get_driver.assert_not_awaited()
+
+    async def test_assert_supports_zero_delta_upper_bound(self) -> None:
+        shared: dict = {}
+        spec = {
+            "counter_cmd": "show port counters",
+            "counter_regex": r"out\D*(\d+)",
+            "direction": "possible_egress",
+            "min_delta": 0,
+            "max_delta": 0,
+        }
+        with patch(
+            _COUNTER_PATH, new_callable=AsyncMock, return_value=self._driver("out 500")
+        ):
+            await self._task(shared).run(
+                {"hostname": "rbb-r1", "action": "snapshot", **spec}
+            )
+        with patch(
+            _COUNTER_PATH, new_callable=AsyncMock, return_value=self._driver("out 500")
+        ):
+            await self._task(shared).run(
+                {"hostname": "rbb-r1", "action": "assert", **spec}
+            )
+        with (
+            patch(
+                _COUNTER_PATH,
+                new_callable=AsyncMock,
+                return_value=self._driver("out 501"),
+            ),
+            self.assertRaisesRegex(TestCaseFailure, "leaked onto an egress"),
+        ):
+            await self._task(shared).run(
+                {"hostname": "rbb-r1", "action": "assert", **spec}
+            )
 
 
 class BgpEdgeConfigHelperTest(unittest.TestCase):

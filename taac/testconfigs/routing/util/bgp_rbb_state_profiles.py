@@ -182,21 +182,33 @@ class RbbMySidExpectation:
     sid: str
     behavior: str
     require_resolved: bool = False
+    prefix_length: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "role", _role(self.role))
         object.__setattr__(self, "sid", _address(self.sid))
         if type(self.require_resolved) is not bool:
             raise TypeError("MySID require_resolved must be a bool value")
+        if self.prefix_length is not None and (
+            not isinstance(self.prefix_length, int)
+            or isinstance(self.prefix_length, bool)
+            or not 0 <= self.prefix_length <= 128
+        ):
+            raise ValueError(
+                "MySID prefix_length must be an integer from 0 through 128"
+            )
         if not self.behavior.strip():
             raise ValueError("MySID expectation requires a behavior")
 
     def to_params(self) -> dict[str, t.Any]:
-        return {
+        params: dict[str, t.Any] = {
             "sid": self.sid,
             "behavior": self.behavior,
             "require_resolved": self.require_resolved,
         }
+        if self.prefix_length is not None:
+            params["prefix_length"] = self.prefix_length
+        return params
 
 
 @dataclass(frozen=True)

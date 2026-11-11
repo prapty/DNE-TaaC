@@ -265,16 +265,24 @@ def _normalize_ndp(raw: t.Mapping[str, t.Any]) -> dict[str, t.Any]:
 def _normalize_mysid(raw: t.Mapping[str, t.Any]) -> dict[str, t.Any]:
     _reject_unknown(
         raw,
-        {"sid", "behavior", "require_resolved"},
+        {"sid", "behavior", "require_resolved", "prefix_length"},
         "MySID expectation",
     )
     sid = str(ipaddress.ip_address(str(raw["sid"]).split("/", 1)[0]))
     behavior = str(raw.get("behavior", "")).strip()
     if not behavior:
         raise ValueError("MySID expectation requires a behavior")
+    prefix_length = raw.get("prefix_length")
+    if prefix_length is not None and (
+        not isinstance(prefix_length, int)
+        or isinstance(prefix_length, bool)
+        or not 0 <= prefix_length <= 128
+    ):
+        raise ValueError("MySID prefix_length must be an integer from 0 through 128")
     return {
         "sid": sid,
         "behavior": behavior,
+        "prefix_length": prefix_length,
         "require_resolved": _strict_bool(
             raw.get("require_resolved", False), "MySID require_resolved"
         ),
@@ -607,6 +615,8 @@ class RbbStateAuditTask(BaseTask):
             for expectation in mysids:
                 blocks = _mysid_entry_blocks(output, expectation["sid"])
                 required = [expectation["behavior"]]
+                if expectation["prefix_length"] is not None:
+                    required.append(f"/{expectation['prefix_length']}")
                 if expectation["require_resolved"]:
                     required.append("resolved via")
                 matching = [

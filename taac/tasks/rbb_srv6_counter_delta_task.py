@@ -77,6 +77,8 @@ class RbbSrv6CounterDeltaTask(BaseTask):
             counter_regex: regex with one integer capture group (required).
             direction: "encap" / "decap" label for the shared-data key + logs.
             min_delta: minimum required increase for "assert" (default 1).
+            max_delta: optional maximum allowed increase. Setting min_delta=0
+                with max_delta=0 proves a selected egress stayed idle.
             reference_hostname/reference_direction: optional previously asserted
                 counter delta to compare against.
             min_reference_ratio: require this counter delta to be at least this
@@ -102,10 +104,17 @@ class RbbSrv6CounterDeltaTask(BaseTask):
         gate = params.get("gate", "rbb_srv6_counter_delta")
         key = f"{hostname}:{direction}"
         min_delta = int(params.get("min_delta", 1))
-        if action == _ASSERT and min_delta < 1:
+        max_delta_raw = params.get("max_delta")
+        max_delta = int(max_delta_raw) if max_delta_raw is not None else None
+        if action == _ASSERT and min_delta < 0:
             raise ValueError(
-                "rbb_srv6_counter_delta 'min_delta' must be at least 1 for "
+                "rbb_srv6_counter_delta 'min_delta' must be non-negative for "
                 f"an assert action, got {min_delta}"
+            )
+        if max_delta is not None and max_delta < min_delta:
+            raise ValueError(
+                "rbb_srv6_counter_delta 'max_delta' must be greater than or "
+                f"equal to min_delta ({min_delta}), got {max_delta}"
             )
         reference_hostname = params.get("reference_hostname")
         reference_direction = params.get("reference_direction")
@@ -151,13 +160,20 @@ class RbbSrv6CounterDeltaTask(BaseTask):
         delta = value - baseline
         self.logger.info(
             f"{hostname} -- [{gate}] {direction} counter now={value} "
-            f"baseline={baseline} delta={delta} (min={min_delta})"
+            f"baseline={baseline} delta={delta} (min={min_delta}, "
+            f"max={max_delta if max_delta is not None else 'unbounded'})"
         )
         if delta < min_delta:
             raise TestCaseFailure(
                 f"[{gate}] selected {direction}-path counter delta on {hostname} was "
                 f"{delta} (< required {min_delta}); expected traffic to "
                 f"{direction} across the core"
+            )
+        if max_delta is not None and delta > max_delta:
+            raise TestCaseFailure(
+                f"[{gate}] selected {direction}-path counter delta on "
+                f"{hostname} was {delta} (> allowed {max_delta}); traffic "
+                "leaked onto an egress that must remain idle"
             )
         self._data[f"{key}:delta"] = delta
 

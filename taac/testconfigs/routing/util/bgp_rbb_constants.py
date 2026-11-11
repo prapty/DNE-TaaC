@@ -213,6 +213,8 @@ ROUTE_OWNER_BGPD: str = "BGPD"
 # Reverse ordinary-IPv6 traffic does not add SRv6 coverage.
 TRAFFIC_ITEM_R1_TO_R2: str = "RBB_R1_TO_R2_SRV6"
 TRAFFIC_ITEM_NAMED_NHG: str = "RBB_R1_TO_R2_NAMED_NHG"
+TRAFFIC_ITEM_TC32_MYSID_DROP: str = "RBB_P2_TC32_MYSID_DROP"
+TRAFFIC_ITEM_TC106_UNKNOWN_USID: str = "RBB_P2_TC106_UNKNOWN_USID"
 ALL_TRAFFIC_ITEMS: tuple[str, ...] = (TRAFFIC_ITEM_R1_TO_R2,)
 
 # ─── Timing ───────────────────────────────────────────────────────────────

@@ -28,6 +28,21 @@ ARG BASE_IMAGE=run-docker-build-taac-image-sh-instead
 # =====================================================================
 FROM ${BASE_IMAGE} AS builder
 
+# The Cisco FBOSS builder image supplies sccache as a compiler launcher, but
+# Docker's ephemeral getdeps extraction tree is not stable enough for its
+# input-file hashing. Hide the optional launcher so getdeps compiles directly.
+RUN rm -f /usr/local/bin/sccache
+
+# The Cisco builder's Python 3.12 was compiled for x86-64-v2.  Python's
+# extension build flags therefore enable SSE4.2, while a plain getdeps CMake
+# build otherwise defaults to baseline x86-64.  Folly deliberately rejects
+# that mixture at import time (F14 mode 2 in the Python extension versus mode
+# 1 in libfolly).  Build the native dependency tree for the same ABI target as
+# Python so the generated FBThrift bindings can be imported in the runtime
+# image.
+ENV CFLAGS="-march=x86-64-v2"
+ENV CXXFLAGS="-march=x86-64-v2"
+
 # Optional cap on build parallelism. Empty = let each tool default to
 # nproc. Set via `docker build --build-arg NUM_JOBS=N` (or pass
 # `--num-jobs N` to build-taac-image.sh). Useful on memory-constrained

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import shlex
 import typing as t
 from dataclasses import dataclass, field
@@ -208,6 +209,160 @@ def srv6_decap_counter_spec(
         "counter_cmd": _counter_read_cmd("TAAC_RBB_DECAP_COUNTER_CMD", default_cmd),
         "counter_regex": _counter_read_cmd(
             "TAAC_RBB_DECAP_COUNTER_REGEX", r"[Oo]ut(?:put)?\D*(\d+)"
+        ),
+    }
+
+
+def srv6_midpoint_counter_spec(
+    node: str, topology: RbbTopology | None = None
+) -> dict[str, t.Any]:
+    """R2 uA evidence: packets leave the midpoint on its return core link."""
+    top = _topology(topology).node(node)
+    if len(top.core_pcs) < 2 or not top.core_pcs[1].members:
+        raise ValueError("TC-17 requires the second R2 core port-channel")
+    member = top.core_pcs[1].members[0]
+    return {
+        "gate": "phase2:TC-17",
+        "direction": "midpoint_egress",
+        "counter_cmd": _counter_read_cmd(
+            "TAAC_RBB_MIDPOINT_COUNTER_CMD",
+            "fboss2 show fb303-counters --regex "
+            + shlex.quote(
+                rf"^{re.escape(member)}\.out_(unicast|multicast|broadcast)_pkts\.sum$"
+            ),
+        ),
+        "counter_regex": _counter_read_cmd(
+            "TAAC_RBB_MIDPOINT_COUNTER_REGEX",
+            r"out_(?:unicast|multicast|broadcast)_pkts\.sum\D*(\d+)",
+        ),
+    }
+
+
+def _core_packet_counter_spec(
+    *,
+    member: str,
+    packet_direction: str,
+    direction: str,
+    gate: str,
+) -> dict[str, t.Any]:
+    if packet_direction not in ("in", "out"):
+        raise ValueError("core packet counter direction must be 'in' or 'out'")
+    return {
+        "gate": gate,
+        "direction": direction,
+        "counter_cmd": (
+            "fboss2 show fb303-counters --regex "
+            + shlex.quote(
+                rf"^{re.escape(member)}\.{packet_direction}_"
+                r"(unicast|multicast|broadcast)_pkts\.sum$"
+            )
+        ),
+        "counter_regex": (
+            rf"{packet_direction}_(?:unicast|multicast|broadcast)_pkts\.sum\D*(\d+)"
+        ),
+    }
+
+
+def srv6_usid_shift_counter_specs(
+    topology: RbbTopology,
+) -> tuple[tuple[str, dict[str, t.Any]], ...]:
+    """Exact two-node zigzag interfaces traversed after R2's uA lookup.
+
+    The packed carrier is midpoint(R2) -> head(R1) -> tail(R2).  Correlating
+    these four counters proves the packet left R2 after its MySID LPM match,
+    arrived at R1 with the shifted carrier, and returned to R2 after R1's uA
+    action.  End-to-end IXIA delivery separately proves final decapsulation.
+    """
+    r1, r2 = topology.r1, topology.r2
+    if len(r1.core_pcs) < 2 or len(r2.core_pcs) < 2:
+        raise ValueError("TC-18 requires two core port-channels on each DUT")
+    selected = (
+        (r2, 1, "out", "tc18_midpoint_egress"),
+        (r1, 1, "in", "tc18_shifted_ingress"),
+        (r1, 0, "out", "tc18_head_egress"),
+        (r2, 0, "in", "tc18_tail_ingress"),
+    )
+    result: list[tuple[str, dict[str, t.Any]]] = []
+    for node, pc_index, packet_direction, direction in selected:
+        members = node.core_pcs[pc_index].members
+        if not members:
+            raise ValueError(
+                f"TC-18 requires a member on {node.role} core path {pc_index + 1}"
+            )
+        result.append(
+            (
+                node.hostname,
+                _core_packet_counter_spec(
+                    member=members[0],
+                    packet_direction=packet_direction,
+                    direction=direction,
+                    gate="phase2:TC-18",
+                ),
+            )
+        )
+    return tuple(result)
+
+
+def srv6_ingress_drop_counter_spec(
+    node: str,
+    counter: str,
+    topology: RbbTopology | None = None,
+) -> dict[str, t.Any]:
+    """Exact ingress-port debug counter used by TC-32 and TC-106."""
+    top = _topology(topology).node(node)
+    edge = top.primary_ixia_interface
+    if not edge:
+        raise ValueError(f"{counter} validation requires an IXIA ingress edge")
+    names = {
+        "mysid": ("in_srv6_mysid_discards", "phase2:TC-32"),
+        "unknown": ("in_dst_null_discards", "phase2:TC-106"),
+    }
+    if counter not in names:
+        raise ValueError(f"unsupported SRv6 ingress drop counter {counter!r}")
+    stat, gate = names[counter]
+    return {
+        "gate": gate,
+        "direction": f"{counter}_drop",
+        "counter_cmd": (
+            "fboss2 show fb303-counters --regex "
+            + shlex.quote(rf"^{re.escape(edge)}\.{stat}\.sum$")
+        ),
+        "counter_regex": rf"{stat}\.sum\D*(\d+)",
+        "min_delta": int(
+            os.environ.get("TAAC_RBB_SRV6_DROP_COUNTER_MIN_DELTA", "100")
+        ),
+    }
+
+
+def srv6_possible_egress_counter_spec(
+    node: str, topology: RbbTopology | None = None
+) -> dict[str, t.Any]:
+    """Sum packet counters on every R2 core/IXIA egress for no-leak proof."""
+    top = _topology(topology).node(node)
+    interfaces = [member for pc in top.core_pcs for member in pc.members]
+    if top.primary_ixia_interface:
+        interfaces.append(top.primary_ixia_interface)
+    if not interfaces:
+        raise ValueError("TC-106 requires at least one possible egress")
+    # Keep the device-side expression POSIX/RE2-friendly; capture groups are
+    # harmless here because only the Python extraction regex consumes values.
+    interface_re = "(" + "|".join(re.escape(item) for item in interfaces) + ")"
+    return {
+        "gate": "phase2:TC-106",
+        "direction": "possible_egress",
+        "counter_cmd": (
+            "fboss2 show fb303-counters --regex "
+            + shlex.quote(
+                rf"^{interface_re}\.out_(unicast|multicast|broadcast)_pkts\.sum$"
+            )
+        ),
+        "counter_regex": r"out_(?:unicast|multicast|broadcast)_pkts\.sum\D*(\d+)",
+        "min_delta": 0,
+        # Core ports carry routing keepalives during the five-second window.
+        # A small explicit bound rejects leakage of the 1000-fps test stream
+        # without confusing unrelated control packets with leaked SRv6 data.
+        "max_delta": int(
+            os.environ.get("TAAC_RBB_TC106_MAX_EGRESS_DELTA", "100")
         ),
     }
 
