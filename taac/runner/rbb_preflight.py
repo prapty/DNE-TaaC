@@ -222,6 +222,7 @@ _RBB_SUITES = frozenset(
         "dual-stack-traffic",
         "tail-decap",
         "mysid-validation",
+        "srv6-wire",
         "resilience",
     )
 )
@@ -737,7 +738,7 @@ def run_preflight(
         if _is_endpoint_placeholder(value):
             raise OSSConfigError(f"Replace the placeholder value for {name}")
 
-    setup_option = ""
+    setup_option = "--suite srv6-wire" if suite == "srv6-wire" else ""
     if setup_duts or setup_dut_edges:
         setup_option = "--setup-duts" if setup_duts else "--setup-dut-edges"
     _validate_dut_credentials((r1_host, r2_host), setup_option)
@@ -779,7 +780,7 @@ def run_preflight(
             # recursive loopback against the complete RBB address plan.
             if RECURSIVE_ROUTE_PROFILE.testplan_id != "phase2:TC-01":
                 raise ValueError("invalid recursive-route profile")
-        elif suite == "core-ecmp":
+        elif suite in ("core-ecmp", "srv6-wire"):
             from taac.testconfigs.routing.util.bgp_rbb_core_ecmp_profiles import (
                 validate_core_ecmp_topology,
             )

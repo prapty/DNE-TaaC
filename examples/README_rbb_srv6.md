@@ -416,6 +416,7 @@ with `--suite`:
 | `dual-stack-traffic` | Phase 1 TC-11/12 and partial TC-15: IPv4 forwarding plus concurrent bidirectional IPv4/IPv6 throughput and loss | Required |
 | `tail-decap` | Phase 2 TC-24: final-uSID decapsulation and inner-table lookup | Required |
 | `mysid-validation` | Phase 2 TC-16/17/18/32/106: End.uA and MySID LPM shift/forward, MySID forwarding, exact drop telemetry, and unknown-uSID clean drop | Required |
+| `srv6-wire` | Full Phase 2 TC-05/08/113: named-NHG forwarding and distribution plus decoded outer IPv6/uSID carrier captured from R1 core egress | Required; RESTPy/TaacIxia and root DUT SSH |
 | `resilience` | Phase 2 TC-15/104, partial TC-30, and adapted TC-99: warmboot, bgpd restart, and edge outage | Required; RESTPy/TaacIxia only |
 
 The TC-05/06/07 IXIA received-route assertions use IxNetwork's RESTPy learned
@@ -529,8 +530,23 @@ Examples for an already configured lab:
 ./scripts/run-rbb-srv6.sh --suite dual-stack-traffic --with-traffic
 ./scripts/run-rbb-srv6.sh --suite tail-decap --with-traffic
 ./scripts/run-rbb-srv6.sh --suite mysid-validation --with-traffic
+./scripts/run-rbb-srv6.sh --suite srv6-wire --with-traffic
 ./scripts/run-rbb-srv6.sh --suite resilience --with-traffic
 ```
+
+The `srv6-wire` suite closes the packet-evidence gap that cannot be observed at
+the ordinary two IXIA service edges. For each test, TAAC snapshots R1's current
+AgentConfig, installs a uniquely named local SPAN from every R1 core egress to
+the selected R1 IXIA edge, reloads the agent configuration, and starts IXIA
+hardware capture. The downloaded PCAP must contain IPv6-in-IPv6 traffic whose
+outer source is the configured R1 SRv6 tunnel source and whose destination is
+the exact ordered, zero-terminated packed uSID carrier. The embedded packet
+must retain the IXIA source and target the load-bearing prefix. TC-05 and TC-08
+also correlate IXIA transmit frames with every R1-egress/R2-ingress named-NHG
+path. TC-113 applies the same decoder specifically to locator bits, ordered
+16-bit functions, and zero termination. AgentConfig restoration is both an
+explicit final stage and a best-effort cleanup step; an existing mirror or
+source-port mirror binding is rejected rather than adopted.
 
 For a fresh image, add the same explicit mutation flags used by the base suite:
 

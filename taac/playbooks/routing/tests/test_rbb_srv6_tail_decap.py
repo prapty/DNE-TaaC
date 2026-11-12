@@ -90,6 +90,8 @@ class RbbSrv6FunctionalCoverageTest(unittest.TestCase):
         self.assertEqual(
             set(SRV6_FUNCTIONAL_CASES),
             {
+                "phase2:TC-05",
+                "phase2:TC-08",
                 "phase2:TC-16",
                 "phase2:TC-17",
                 "phase2:TC-18",
@@ -99,26 +101,33 @@ class RbbSrv6FunctionalCoverageTest(unittest.TestCase):
                 "phase2:TC-102",
                 "phase2:TC-105",
                 "phase2:TC-106",
+                "phase2:TC-113",
             },
         )
         self.assertEqual(
             runnable_srv6_functional_ids(),
             (
+                "phase2:TC-05",
+                "phase2:TC-08",
                 "phase2:TC-16",
                 "phase2:TC-17",
                 "phase2:TC-18",
                 "phase2:TC-24",
                 "phase2:TC-32",
                 "phase2:TC-106",
+                "phase2:TC-113",
             ),
         )
         for testplan_id in (
+            "phase2:TC-05",
+            "phase2:TC-08",
             "phase2:TC-16",
             "phase2:TC-17",
             "phase2:TC-18",
             "phase2:TC-24",
             "phase2:TC-32",
             "phase2:TC-106",
+            "phase2:TC-113",
         ):
             self.assertIs(
                 SRV6_FUNCTIONAL_CASES[testplan_id].readiness,

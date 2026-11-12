@@ -124,6 +124,55 @@ class RbbTrafficCounterCorrelationTaskTest(unittest.IsolatedAsyncioTestCase):
             ["fboss2 show interface eth1/1 counters"] * 2,
         )
 
+    async def test_explicit_cleared_stats_uses_zero_ixia_baseline(self) -> None:
+        driver = MagicMock()
+        driver.async_run_cmd_on_shell = AsyncMock(
+            side_effect=[
+                self._row("eth1/1", unicast_out=100),
+                self._row("eth1/1", unicast_out=1100),
+            ]
+        )
+        task, ixia = self._task(
+            driver,
+            [{"identifier": "FLOW", "tx_frames": 1000}],
+        )
+        base = {
+            "hostname": "r1.example",
+            "sample_id": "cleared-view",
+            "counter_interfaces": ["eth1/1"],
+            "counter_direction": "egress",
+            "counter_kind": "packets",
+            "traffic_item": "FLOW",
+            "ixia_counter_field": "tx_frames",
+            "ixia_stats_cleared": True,
+        }
+        with (
+            patch(
+                "taac.tasks.rbb_traffic_counter_correlation_task."
+                "async_get_device_driver",
+                AsyncMock(return_value=driver),
+            ),
+            patch(
+                "taac.tasks.rbb_traffic_counter_correlation_task.time.time",
+                return_value=1234.5,
+            ),
+        ):
+            await task.run({**base, "action": "snapshot"})
+            await task.run(
+                {
+                    **base,
+                    "action": "assert_ixia_share",
+                    "min_ixia_share_percent": 1,
+                    "tolerance_percent": 0,
+                    "absolute_tolerance": 0,
+                }
+            )
+
+        self.assertEqual(
+            ixia.get_latest_stats.call_args_list,
+            [unittest.mock.call(since_time=1234.5)],
+        )
+
     async def test_correlates_byte_delta_with_ixia_bytes(self) -> None:
         driver = MagicMock()
         driver.async_run_cmd_on_shell = AsyncMock(
@@ -354,6 +403,47 @@ class RbbTrafficCounterCorrelationTaskTest(unittest.IsolatedAsyncioTestCase):
                         "action": "assert_ixia_share",
                         "traffic_item": "FLOW",
                         "ixia_counter_field": "tx_frames",
+                        "min_ixia_share_percent": 1,
+                    }
+                )
+
+    async def test_ixia_share_subtracts_declared_fixed_traversal(self) -> None:
+        driver = MagicMock()
+        driver.async_run_cmd_on_shell = AsyncMock(
+            side_effect=[
+                self._row("eth1/1", unicast_out=100),
+                # Raw delta is 100% of IXIA solely from the fixed zigzag leg.
+                self._row("eth1/1", unicast_out=1100),
+            ]
+        )
+        task, _ = self._task(
+            driver,
+            [{"identifier": "FLOW", "tx_frames": 2000}],
+            baseline_stats=[{"identifier": "FLOW", "tx_frames": 1000}],
+        )
+        base = {
+            "hostname": "r1.example",
+            "sample_id": "zigzag-path0",
+            "counter_interfaces": ["eth1/1"],
+            "counter_direction": "egress",
+            "counter_kind": "packets",
+            "traffic_item": "FLOW",
+            "ixia_counter_field": "tx_frames",
+            "fixed_ixia_multiples": 1,
+        }
+        with patch(
+            "taac.tasks.rbb_traffic_counter_correlation_task."
+            "async_get_device_driver",
+            AsyncMock(return_value=driver),
+        ):
+            await task.run({**base, "action": "snapshot"})
+            with self.assertRaisesRegex(
+                TestCaseFailure, "required IXIA traffic share"
+            ):
+                await task.run(
+                    {
+                        **base,
+                        "action": "assert_ixia_share",
                         "min_ixia_share_percent": 1,
                     }
                 )

@@ -758,6 +758,12 @@ class TestRbbPreflight(TestCase):
                 "",
             ),
             (
+                "srv6-wire",
+                ["--with-traffic"],
+                "/workspace/examples/rbb_srv6_wire_config.py",
+                "",
+            ),
+            (
                 "resilience",
                 ["--with-traffic"],
                 "/workspace/examples/rbb_srv6_resilience_config.py",
@@ -806,6 +812,10 @@ class TestRbbPreflight(TestCase):
             ),
             (
                 ["--suite", "named-nhg-lifecycle"],
+                "requires --with-traffic",
+            ),
+            (
+                ["--suite", "srv6-wire"],
                 "requires --with-traffic",
             ),
         ):

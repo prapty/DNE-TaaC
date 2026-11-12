@@ -211,6 +211,12 @@ from taac.tasks.rbb_srv6_direct_route_task import (
 from taac.tasks.rbb_srv6_named_nhg_task import (
     RbbSrv6NamedNhgTask,
 )
+from taac.tasks.rbb_srv6_capture_mirror_task import (
+    RbbSrv6CaptureMirrorTask,
+)
+from taac.tasks.rbb_srv6_pcap_verify_task import (
+    RbbSrv6PcapVerifyTask,
+)
 from taac.tasks.rbb_srv6_verify_task import (
     RbbSrv6VerifyTask,
 )
@@ -282,8 +288,10 @@ TASK_REGISTRY: t.List[t.Type[BaseTask]] = [
     RbbOpenrCorePathTask,
     RbbRecursiveRouteTask,
     RbbSrv6CounterDeltaTask,
+    RbbSrv6CaptureMirrorTask,
     RbbSrv6DirectRouteTask,
     RbbSrv6NamedNhgTask,
+    RbbSrv6PcapVerifyTask,
     RbbSrv6VerifyTask,
     RbbSplitAgentRecoveryTask,
     RbbStateAuditTask,

@@ -194,6 +194,8 @@ class RbbTrafficCounterCorrelationTask(BaseTask):
             "min_value",
             "min_delta",
             "min_ixia_share_percent",
+            "fixed_ixia_multiples",
+            "ixia_stats_cleared",
         }
         unknown = sorted(set(params) - allowed)
         if unknown:
@@ -248,15 +250,43 @@ class RbbTrafficCounterCorrelationTask(BaseTask):
                 "assert requires traffic_item and ixia_counter_field of "
                 "tx_frames, rx_frames, tx_bytes, or rx_bytes"
             )
+        fixed_ixia_multiples = params.get("fixed_ixia_multiples", 0)
+        if (
+            isinstance(fixed_ixia_multiples, bool)
+            or not isinstance(fixed_ixia_multiples, int)
+            or fixed_ixia_multiples < 0
+        ):
+            raise ValueError("fixed_ixia_multiples must be a non-negative integer")
+        if fixed_ixia_multiples and action not in (_SNAPSHOT, _ASSERT_IXIA_SHARE):
+            raise ValueError(
+                "fixed_ixia_multiples is supported only for snapshot and "
+                "assert_ixia_share"
+            )
+        ixia_stats_cleared = params.get("ixia_stats_cleared", False)
+        if not isinstance(ixia_stats_cleared, bool):
+            raise ValueError("ixia_stats_cleared must be a boolean")
+        if ixia_stats_cleared and action not in (_SNAPSHOT, _ASSERT_IXIA_SHARE):
+            raise ValueError(
+                "ixia_stats_cleared is supported only for snapshot and "
+                "assert_ixia_share"
+            )
 
         key = f"{hostname}:{sample_id}"
         ixia_message = ""
         if action == _SNAPSHOT and traffic_item:
             sample_time = time.time()
-            baseline_value = self._ixia_counter(
-                self.ixia.get_latest_stats(since_time=sample_time),
-                traffic_item,
-                counter_field,
+            # IxNetwork ClearStats completes before its statistics view always
+            # reflects the reset.  Callers which have just completed an
+            # isolated clear can declare that boundary explicitly rather than
+            # snapshotting the stale pre-clear total.
+            baseline_value = (
+                0
+                if ixia_stats_cleared
+                else self._ixia_counter(
+                    self.ixia.get_latest_stats(since_time=sample_time),
+                    traffic_item,
+                    counter_field,
+                )
             )
             ixia_baseline = {
                 "traffic_item": traffic_item,
@@ -400,23 +430,34 @@ class RbbTrafficCounterCorrelationTask(BaseTask):
                     "min_ixia_share_percent must be greater than 0 and not "
                     "exceed 100"
                 )
+            fixed_delta = fixed_ixia_multiples * ixia_value
+            adjusted_dut_delta = dut_delta - fixed_delta
+            if adjusted_dut_delta < 0:
+                raise TestCaseFailure(
+                    f"[{gate}] DUT counter delta is below its declared fixed "
+                    f"traversal volume for {hostname}:{sample_id}: DUT "
+                    f"delta={dut_delta}, fixed={fixed_delta}"
+                )
             required_delta = max(
                 1, math.ceil(ixia_value * min_share_percent / 100.0)
             )
-            observed_share = dut_delta * 100.0 / ixia_value
+            observed_share = adjusted_dut_delta * 100.0 / ixia_value
             self.logger.info(
                 f"{hostname} -- [{gate}] {sample_id}: "
                 f"member deltas={member_deltas}, DUT aggregate delta={dut_delta}, "
+                f"fixed traversal delta={fixed_delta}, "
+                f"adjusted NHG delta={adjusted_dut_delta}, "
                 f"IXIA {counter_field}={ixia_value}, "
                 f"observed share={observed_share:.3f}%, "
                 f"required share={min_share_percent:.3f}% "
                 f"({required_delta} packets)"
             )
-            if dut_delta < required_delta:
+            if adjusted_dut_delta < required_delta:
                 raise TestCaseFailure(
                     f"[{gate}] DUT counter did not carry the required IXIA "
                     f"traffic share for {hostname}:{sample_id}: DUT "
-                    f"delta={dut_delta}, IXIA {counter_field}={ixia_value}, "
+                    f"delta={dut_delta}, adjusted NHG delta={adjusted_dut_delta}, "
+                    f"IXIA {counter_field}={ixia_value}, "
                     f"observed={observed_share:.3f}%, "
                     f"required={min_share_percent:.3f}%"
                 )

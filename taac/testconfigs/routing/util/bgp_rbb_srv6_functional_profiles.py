@@ -5,6 +5,7 @@
 The Phase-2 test plan contains several superficially related requirements whose
 preconditions are materially different:
 
+* TC-05/08/113 validate the head-end outer packet and packed uSID carrier.
 * TC-23 is a 16K End.DT46 MySID *scale* case.
 * TC-24 proves the final uSID decapsulation and inner-table lookup path.
 * TC-102 requires symmetric, one-hop SRv6 services in both directions.
@@ -79,6 +80,28 @@ class Srv6CaseAssessment:
 
 SRV6_FUNCTIONAL_CASES: t.Mapping[str, Srv6CaseAssessment] = types.MappingProxyType(
     {
+        "phase2:TC-05": Srv6CaseAssessment(
+            testplan_id="phase2:TC-05",
+            title="Head-end encapsulation and NHG distribution",
+            readiness=Srv6CaseReadiness.RUNNABLE,
+            factory="create_rbb_srv6_wire_test_config",
+            evidence=(
+                "exact named SRv6 NHG/NHE, RIB, and resolved FIB state",
+                "lossless IXIA delivery with traffic on every declared NHG path",
+                "decoded R1 core-egress IPv6-in-IPv6 packet and packed uSID DA",
+            ),
+        ),
+        "phase2:TC-08": Srv6CaseAssessment(
+            testplan_id="phase2:TC-08",
+            title="Resolved SRv6 NHG traffic",
+            readiness=Srv6CaseReadiness.RUNNABLE,
+            factory="create_rbb_srv6_wire_test_config",
+            evidence=(
+                "the load-bearing route resolves through the exact named SRv6 NHG",
+                "lossless IXIA delivery with traffic on every declared NHG path",
+                "decoded outer source, packed carrier, and embedded IPv6 flow",
+            ),
+        ),
         "phase2:TC-16": Srv6CaseAssessment(
             testplan_id="phase2:TC-16",
             title="End.uA midpoint processing",
@@ -225,6 +248,17 @@ SRV6_FUNCTIONAL_CASES: t.Mapping[str, Srv6CaseAssessment] = types.MappingProxyTy
                     "counter increases"
                 ),
                 "all possible R2 egress packet deltas remain below a strict bound",
+            ),
+        ),
+        "phase2:TC-113": Srv6CaseAssessment(
+            testplan_id="phase2:TC-113",
+            title="uSID carrier encoding on wire",
+            readiness=Srv6CaseReadiness.RUNNABLE,
+            factory="create_rbb_srv6_wire_test_config",
+            evidence=(
+                "IXIA hardware capture receives the mirrored R1 core-egress frame",
+                "the outer DA contains the exact locator and ordered 16-bit uSIDs",
+                "the carrier is zero-terminated and contains the original IPv6 flow",
             ),
         ),
     }
