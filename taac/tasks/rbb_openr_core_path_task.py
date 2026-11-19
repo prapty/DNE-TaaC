@@ -434,10 +434,23 @@ class RbbOpenrCorePathTask(BaseTask):
         for index, (current, expected_override) in enumerate(
             zip(observed["paths"], expected)
         ):
-            if current["metric_override"] != expected_override:
+            reported_override = current["metric_override"]
+            # ``metricOverride`` in ``breeze lm links`` is the interface-level
+            # override.  The command used by this task programs an adjacency-
+            # level override, whose authoritative readback is the effective
+            # metric in ``breeze decision adj``.  Some Open/R releases happened
+            # to mirror the value into Link Monitor; current releases leave it
+            # null.  Accept either representation but always require Decision
+            # to project the exact requested metric.
+            override_matches = (
+                reported_override is None
+                if expected_override is None
+                else reported_override in (None, expected_override)
+            )
+            if not override_matches:
                 raise TestCaseFailure(
                     f"[{gate}] path {index} override expected={expected_override!r} "
-                    f"observed={current['metric_override']!r}"
+                    f"observed={reported_override!r}"
                 )
             # A programmed override must project to the exact Decision metric.
             # With no override, however, the base metric may be computed from
@@ -642,9 +655,34 @@ class RbbOpenrCorePathTask(BaseTask):
                     f"{current['interface']}: {current['metric_override']!r}"
                 )
         failures: list[str] = []
-        for current in observed["paths"]:
-            if current["metric_override"] is None:
+        for index, current in enumerate(observed["paths"]):
+            owned_values: set[int] = set()
+            if isinstance(expected_owned, list) and isinstance(
+                expected_owned[index], int
+            ):
+                owned_values.add(expected_owned[index])
+            attempted = state.get("attempted_overrides")
+            if isinstance(attempted, list) and isinstance(attempted[index], int):
+                owned_values.add(attempted[index])
+            if not owned_values:
                 continue
+            reported_override = current["metric_override"]
+            effective_metric = current["metric"]
+            baseline_metric = state["paths"][index]["metric"]
+            if (
+                reported_override not in owned_values
+                and effective_metric not in owned_values
+            ):
+                # A failed command may never have changed the path.  In that
+                # case there is nothing to clear.  Any other value is foreign
+                # state and must not be removed by this task.
+                if reported_override is None and effective_metric == baseline_metric:
+                    continue
+                raise TestCaseFailure(
+                    f"[{gate}] refusing to clear unowned effective metric on "
+                    f"{current['interface']}: reported_override="
+                    f"{reported_override!r}, effective_metric={effective_metric!r}"
+                )
             try:
                 await self._run_clear_command(
                     driver, current["peer"], current["interface"]

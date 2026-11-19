@@ -482,18 +482,36 @@ class RbbRecursiveRouteTask(BaseTask):
             or ""
         )
         members = self._asic_group_members(group_output).get(service_id, set())
-        if not members:
-            raise TestCaseFailure(
-                f"{head}: ASIC NextHopId {service_id} shared by {prefix} and "
-                f"{loopback_prefix} is not a populated next-hop group"
-            )
-
         next_hop_output = (
             await driver.async_run_cmd_on_shell(
                 "fboss2 show hw-object NEXT_HOP uncached"
             )
             or ""
         )
+        if not members:
+            # A one-member SAI NHG may be represented directly by its next-hop
+            # object. Recursive flattening is still proven by the two routes
+            # sharing this exact ID; additionally require that the referenced
+            # SAI next-hop object exists rather than accepting an unresolvable
+            # or stale route attribute.
+            direct_lines = [
+                line.strip()
+                for line in next_hop_output.splitlines()
+                if f"NextHopSaiId({service_id}):" in line
+            ]
+            if not direct_lines:
+                raise TestCaseFailure(
+                    f"{head}: ASIC NextHopId {service_id} shared by {prefix} "
+                    f"and {loopback_prefix} is neither a populated next-hop "
+                    "group nor a present direct next-hop object"
+                )
+            self.logger.info(
+                f"{head} -- ASIC recursive flattening passed: {prefix} and "
+                f"{loopback_prefix} -> direct NextHop {service_id}, "
+                f"next_hops={direct_lines}"
+            )
+            return
+
         missing_members = [
             member
             for member in sorted(members)

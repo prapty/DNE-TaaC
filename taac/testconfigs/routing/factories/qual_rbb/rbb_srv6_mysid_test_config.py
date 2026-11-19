@@ -34,8 +34,10 @@ from taac.testconfigs.routing.util.bgp_rbb_topology import RbbTopology
 from taac.utils.packet_header_utils import create_field, create_packet_header
 
 
-def _raw_ipv6_headers(destination: str) -> list[taac_types.PacketHeader]:
-    return [
+def _raw_ipv6_headers(
+    destination: str, *, inner_ipv4: bool = False
+) -> list[taac_types.PacketHeader]:
+    headers = [
         create_packet_header(
             stack_regex="^ethernet$",
             fields=[
@@ -85,13 +87,67 @@ def _raw_ipv6_headers(destination: str) -> list[taac_types.PacketHeader]:
                     field_attrs={"SingleValue": destination},
                 ),
                 create_field(field_regex="Hop Limit", field_attrs={"SingleValue": 64}),
+                *(
+                    [
+                        create_field(
+                            field_regex="Next Header",
+                            field_attrs={"Auto": False, "SingleValue": 4},
+                        )
+                    ]
+                    if inner_ipv4
+                    else []
+                ),
             ],
         ),
     ]
+    if inner_ipv4:
+        # Match FBOSS AgentSrv6MidpointTest: local-SID processing is exercised
+        # by an IP-in-IP packet, not by a plain IPv6 packet addressed to the SID.
+        headers.extend(
+            [
+                create_packet_header(
+                    stack_regex="^ipv4$",
+                    append_to_stack_regex="^ipv6$",
+                    fields=[
+                        create_field(
+                            field_regex="Source Address",
+                            field_attrs={"SingleValue": "10.0.0.1"},
+                        ),
+                        create_field(
+                            field_regex="Destination Address",
+                            field_attrs={"SingleValue": "10.0.0.2"},
+                        ),
+                        create_field(
+                            field_regex="Time To Live",
+                            field_attrs={"SingleValue": 64},
+                        ),
+                        create_field(
+                            field_regex="Protocol",
+                            field_attrs={"Auto": False, "SingleValue": 17},
+                        ),
+                    ],
+                ),
+                create_packet_header(
+                    stack_regex="^udp$",
+                    append_to_stack_regex="^ipv4$",
+                    fields=[
+                        create_field(
+                            field_regex="UDP-Source-Port",
+                            field_attrs={"SingleValue": 8000},
+                        ),
+                        create_field(
+                            field_regex="UDP-Dest-Port",
+                            field_attrs={"SingleValue": 8001},
+                        ),
+                    ],
+                ),
+            ]
+        )
+    return headers
 
 
 def _negative_traffic_item(
-    topology: RbbTopology, *, name: str, destination: str
+    topology: RbbTopology, *, name: str, destination: str, inner_ipv4: bool = False
 ) -> BasicTrafficItemConfig:
     interface = topology.r2.primary_ixia_interface
     if not interface:
@@ -112,7 +168,7 @@ def _negative_traffic_item(
         merge_destinations=True,
         src_dest_mesh=ixia_types.SrcDestMeshType.MANY_TO_MANY,
         tracking_types=[ixia_types.TrafficStatsTrackingType.TRAFFIC_ITEM],
-        packet_headers=_raw_ipv6_headers(destination),
+        packet_headers=_raw_ipv6_headers(destination, inner_ipv4=inner_ipv4),
         skip_default_l4_protocol=True,
     )
 
@@ -163,6 +219,7 @@ def create_rbb_srv6_mysid_test_config(
             # A configured uA with no next micro-segment is selected, then
             # rejected by the SRv6 local-SID action.
             destination=SRV6_3_USIDS_PROFILE.usid_mid,
+            inner_ipv4=True,
         ),
         _negative_traffic_item(
             topology,

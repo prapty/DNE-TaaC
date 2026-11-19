@@ -305,10 +305,12 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         state = {"group": None, "route": None, "client_id": None}
         agent = MagicMock()
 
-        async def get_groups(_names):
+        async def get_groups(_names, replicate_weighted_nexthops):
+            self.assertFalse(replicate_weighted_nexthops)
             return [state["group"]] if state["group"] is not None else []
 
-        async def add_groups(groups):
+        async def add_groups(groups, combine_duplicated_next_hops):
+            self.assertFalse(combine_duplicated_next_hops)
             supplied = groups[0]
             state["group"] = SimpleNamespace(
                 name=supplied.name,
@@ -432,10 +434,12 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         )
         agent = MagicMock()
 
-        async def get_groups(_names):
+        async def get_groups(_names, replicate_weighted_nexthops):
+            self.assertFalse(replicate_weighted_nexthops)
             return [state["group"]] if state["group"] is not None else []
 
-        async def add_groups(groups):
+        async def add_groups(groups, combine_duplicated_next_hops):
+            self.assertFalse(combine_duplicated_next_hops)
             supplied = groups[0]
             state["group"] = SimpleNamespace(
                 name=supplied.name,
@@ -489,10 +493,12 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         )
         agent = MagicMock()
 
-        async def get_groups(_names):
+        async def get_groups(_names, replicate_weighted_nexthops):
+            self.assertFalse(replicate_weighted_nexthops)
             return [state["group"]] if state["group"] is not None else []
 
-        async def add_groups(groups):
+        async def add_groups(groups, combine_duplicated_next_hops):
+            self.assertFalse(combine_duplicated_next_hops)
             supplied = groups[0]
             state["group"] = SimpleNamespace(
                 name=supplied.name,
@@ -562,7 +568,8 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         order = []
         agent = MagicMock()
 
-        async def get_groups(_names):
+        async def get_groups(_names, replicate_weighted_nexthops):
+            self.assertFalse(replicate_weighted_nexthops)
             return [state["group"]] if state["group"] is not None else []
 
         async def get_routes(_client_id):
@@ -572,7 +579,8 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
             order.append("add-anchor")
             state["anchor"] = routes[0]
 
-        async def add_groups(groups):
+        async def add_groups(groups, combine_duplicated_next_hops):
+            self.assertFalse(combine_duplicated_next_hops)
             order.append("add-group")
             supplied = groups[0]
             state["group"] = SimpleNamespace(
@@ -648,10 +656,12 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         agent = MagicMock()
         agent.addNamedNextHopGroups = None
 
-        async def get_groups(_names):
+        async def get_groups(_names, replicate_weighted_nexthops):
+            self.assertFalse(replicate_weighted_nexthops)
             return [state["group"]] if state["group"] is not None else []
 
-        async def add_fallback(groups):
+        async def add_fallback(groups, combine_duplicated_next_hops):
+            self.assertFalse(combine_duplicated_next_hops)
             supplied = groups[0]
             state["group"] = SimpleNamespace(
                 name=supplied.name,
@@ -804,7 +814,8 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         order = []
         agent = MagicMock()
 
-        async def get_groups(_names):
+        async def get_groups(_names, replicate_weighted_nexthops):
+            self.assertFalse(replicate_weighted_nexthops)
             return [state["group"]] if state["group"] is not None else []
 
         async def get_client_routes(_client_id):
@@ -815,7 +826,8 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
             state["client_id"] = client_id
             state["route"] = routes[0]
 
-        async def add_group(groups):
+        async def add_group(groups, combine_duplicated_next_hops):
+            self.assertFalse(combine_duplicated_next_hops)
             order.append("add-group")
             supplied = groups[0]
             state["group"] = SimpleNamespace(
@@ -926,7 +938,7 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         agent.getNamedNextHopGroups = AsyncMock(
-            side_effect=lambda _names: (
+            side_effect=lambda _names, replicate_weighted_nexthops: (
                 [state["group"]] if state["group"] is not None else []
             )
         )
@@ -959,7 +971,8 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         agent.getRouteTableByClient = AsyncMock(return_value=[_route()])
         group_reads = {"count": 0}
 
-        async def get_group(_names):
+        async def get_group(_names, replicate_weighted_nexthops):
+            self.assertFalse(replicate_weighted_nexthops)
             group_reads["count"] += 1
             return [_group()] if group_reads["count"] == 1 else []
 
@@ -990,7 +1003,8 @@ class RbbSrv6NamedNhgTaskTest(unittest.IsolatedAsyncioTestCase):
         agent.getRouteTableByClient = AsyncMock(return_value=[_route()])
         group_reads = {"count": 0}
 
-        async def get_group(_names):
+        async def get_group(_names, replicate_weighted_nexthops):
+            self.assertFalse(replicate_weighted_nexthops)
             group_reads["count"] += 1
             return [_group()] if group_reads["count"] == 1 else []
 

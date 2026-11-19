@@ -84,6 +84,53 @@ class RbbRecursiveRouteTaskTest(unittest.IsolatedAsyncioTestCase):
                 "r1.example", "2001:db8:ff01::/64", "2001:db8::1"
             )
 
+    async def test_verify_hw_accepts_shared_direct_next_hop(self) -> None:
+        driver = MagicMock()
+        driver.async_run_cmd_on_shell = AsyncMock(
+            side_effect=[
+                (
+                    "RouteEntry(switchId: 1, prefix: 2001:db8:ff01::/64): "
+                    "(NextHopId: 42, Metadata: 0)\n"
+                    "RouteEntry(switchId: 1, prefix: 2001:db8::1/128): "
+                    "(NextHopId: 42, Metadata: 0)"
+                ),
+                "",
+                "NextHopSaiId(42): (Type: SRV6_SIDLIST)",
+            ]
+        )
+        task = RbbRecursiveRouteTask(logger=MagicMock())
+        with patch(
+            f"{_MODULE}.async_get_device_driver", AsyncMock(return_value=driver)
+        ):
+            await task._verify_hw(
+                "r1.example", "2001:db8:ff01::/64", "2001:db8::1"
+            )
+
+    async def test_verify_hw_rejects_missing_shared_next_hop_object(self) -> None:
+        driver = MagicMock()
+        driver.async_run_cmd_on_shell = AsyncMock(
+            side_effect=[
+                (
+                    "RouteEntry(switchId: 1, prefix: 2001:db8:ff01::/64): "
+                    "(NextHopId: 42, Metadata: 0)\n"
+                    "RouteEntry(switchId: 1, prefix: 2001:db8::1/128): "
+                    "(NextHopId: 42, Metadata: 0)"
+                ),
+                "",
+                "NextHopSaiId(99): (Type: IP)",
+            ]
+        )
+        task = RbbRecursiveRouteTask(logger=MagicMock())
+        with (
+            patch(
+                f"{_MODULE}.async_get_device_driver", AsyncMock(return_value=driver)
+            ),
+            self.assertRaisesRegex(TestCaseFailure, "neither a populated"),
+        ):
+            await task._verify_hw(
+                "r1.example", "2001:db8:ff01::/64", "2001:db8::1"
+            )
+
     async def test_verify_proves_rib_next_hop_and_equal_resolved_fib(self) -> None:
         driver = MagicMock()
         service = _route("2001:db8:ff01::/64", (_binary("2001:db8:0:2::1"),))

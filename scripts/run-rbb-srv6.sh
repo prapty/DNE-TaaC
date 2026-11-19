@@ -37,7 +37,7 @@ Usage: ./scripts/run-rbb-srv6.sh [OPTIONS] [-- RUNNER_ARGS...]
   --check             Validate inputs in the built image without lab access.
   --config-dir PATH   Use PATH instead of the checkout-local .taac directory.
   --image IMAGE       Use IMAGE instead of the Docker helper's default tag.
-  --suite NAME        Select base (default), state-audit,
+  --suite NAME        Select all, base (default), state-audit,
                       named-nhg-lifecycle, traffic-foundation, core-ecmp,
                       dual-stack-traffic, tail-decap, mysid-validation,
                       srv6-wire, or resilience.
@@ -50,6 +50,7 @@ Usage: ./scripts/run-rbb-srv6.sh [OPTIONS] [-- RUNNER_ARGS...]
 Examples:
   ./scripts/run-rbb-srv6.sh --init
   ./scripts/run-rbb-srv6.sh --check
+  ./scripts/run-rbb-srv6.sh --suite all --with-traffic
   ./scripts/run-rbb-srv6.sh --setup-duts
   ./scripts/run-rbb-srv6.sh --with-traffic
   ./scripts/run-rbb-srv6.sh --suite state-audit
@@ -145,6 +146,11 @@ done
 
 SUITE_REQUIRES_TRAFFIC=0
 case "$SUITE" in
+    all)
+        TEST_CONFIG=""
+        PLAYBOOK=""
+        SUITE_REQUIRES_TRAFFIC=1
+        ;;
     base)
         TEST_CONFIG="/workspace/examples/rbb_srv6_3_usids_config.py"
         PLAYBOOK="bgp_rbb_srv6_3_usids"
@@ -195,7 +201,7 @@ case "$SUITE" in
         ;;
     *)
         echo "Error: unknown suite '$SUITE'" >&2
-        echo "Choose base, state-audit, named-nhg-lifecycle," >&2
+        echo "Choose all, base, state-audit, named-nhg-lifecycle," >&2
         echo "traffic-foundation, core-ecmp, dual-stack-traffic," >&2
         echo "tail-decap, mysid-validation, srv6-wire, or resilience." >&2
         exit 2
@@ -306,6 +312,91 @@ for optional_file in rbb.env secrets.json; do
         exit 1
     fi
 done
+
+if [[ "$SUITE" == "all" ]]; then
+    trap 'echo; echo "Interrupted; stopping the SRv6 all-suite run." >&2; exit 130' INT
+    trap 'echo; echo "Terminated; stopping the SRv6 all-suite run." >&2; exit 143' TERM
+
+    ALL_COMMON_ARGS=(--config-dir "$LOCAL_DIR")
+    if [[ "$CHECK_ONLY" -eq 1 ]]; then
+        ALL_COMMON_ARGS+=(--check)
+    fi
+    if [[ "$SETUP_DUTS" -eq 1 ]]; then
+        ALL_COMMON_ARGS+=(--setup-duts)
+    fi
+    if [[ -n "$IMAGE" ]]; then
+        ALL_COMMON_ARGS+=(--image "$IMAGE")
+    fi
+
+    ALL_RUNNER_ARGS=()
+    if [[ ${#RUNNER_ARGS[@]} -gt 0 ]]; then
+        ALL_RUNNER_ARGS=(-- "${RUNNER_ARGS[@]}")
+    fi
+
+    ALL_SUITES=(
+        base
+        state-audit
+        named-nhg-lifecycle
+        traffic-foundation
+        core-ecmp
+        dual-stack-traffic
+        tail-decap
+        mysid-validation
+        srv6-wire
+        resilience
+    )
+    ALL_PASSED_SUITES=()
+    ALL_FAILED_SUITES=()
+    ALL_FIRST_FAILURE=0
+    for child_suite in "${ALL_SUITES[@]}"; do
+        echo
+        echo "================================================================================"
+        echo "Running SRv6 suite: $child_suite"
+        echo "================================================================================"
+        CHILD_ARGS=(
+            "${ALL_COMMON_ARGS[@]}"
+            --suite "$child_suite"
+        )
+        if [[ "$child_suite" != "state-audit" ]]; then
+            CHILD_ARGS+=(--with-traffic)
+            if [[ "$CONFIGURE_EDGES" -eq 1 ]]; then
+                CHILD_ARGS+=(--setup-dut-edges)
+            fi
+        fi
+        if "$SCRIPT_DIR/run-rbb-srv6.sh" \
+            "${CHILD_ARGS[@]}" "${ALL_RUNNER_ARGS[@]}"; then
+            echo "Completed SRv6 suite: $child_suite"
+            ALL_PASSED_SUITES+=("$child_suite")
+        else
+            child_status=$?
+            if [[ "$child_status" -eq 130 || "$child_status" -eq 143 ]]; then
+                echo "Interrupted SRv6 suite: $child_suite (exit $child_status)" >&2
+                exit "$child_status"
+            fi
+            echo "Failed SRv6 suite: $child_suite (exit $child_status)" >&2
+            ALL_FAILED_SUITES+=("$child_suite:$child_status")
+            if [[ "$ALL_FIRST_FAILURE" -eq 0 ]]; then
+                ALL_FIRST_FAILURE="$child_status"
+            fi
+        fi
+    done
+    echo
+    echo "================================================================================"
+    echo "SRv6 all-suite summary"
+    echo "================================================================================"
+    for child_suite in "${ALL_PASSED_SUITES[@]}"; do
+        echo "PASS  $child_suite"
+    done
+    for failed_suite in "${ALL_FAILED_SUITES[@]}"; do
+        echo "FAIL  ${failed_suite%%:*} (exit ${failed_suite##*:})"
+    done
+    echo "Passed: ${#ALL_PASSED_SUITES[@]}"
+    echo "Failed: ${#ALL_FAILED_SUITES[@]}"
+    if [[ ${#ALL_FAILED_SUITES[@]} -gt 0 ]]; then
+        exit "$ALL_FIRST_FAILURE"
+    fi
+    exit 0
+fi
 
 DOCKER_INPUT_ARGS=(--volume "$LOCAL_DIR:/workspace/.taac:ro")
 if [[ -n "$IMAGE" ]]; then

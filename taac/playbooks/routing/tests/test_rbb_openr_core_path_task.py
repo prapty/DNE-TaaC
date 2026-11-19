@@ -19,6 +19,7 @@ class _OpenrDriver:
         self.addresses = ("2001:db8:c0::", "2001:db8:c1::")
         self.overrides = [None, None]
         self.base_metrics = [20, 20]
+        self.expose_adjacency_overrides_in_links = True
         self.node_overloaded = False
         self.node_increment = 0
         self.interface_up = [True, True]
@@ -47,7 +48,11 @@ class _OpenrDriver:
                         "isOverloaded": self.interface_overloaded[index],
                         "linkFlapBackOffMs": None,
                         "linkMetricIncrementVal": self.link_increments[index],
-                        "metricOverride": self.overrides[index],
+                        "metricOverride": (
+                            self.overrides[index]
+                            if self.expose_adjacency_overrides_in_links
+                            else None
+                        ),
                     }
                     for index, interface in enumerate(self.interfaces)
                 },
@@ -227,6 +232,33 @@ class RbbOpenrCorePathTaskTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(
             "breeze decision routes --no-hostnames --json 192.0.2.2/32",
+            driver.commands,
+        )
+
+    async def test_adjacency_override_uses_decision_metric_readback(self) -> None:
+        driver = _OpenrDriver()
+        driver.expose_adjacency_overrides_in_links = False
+        task = self._task({})
+        with (
+            patch(_DRIVER_PATH, new_callable=AsyncMock, return_value=driver),
+            patch(_AUDIT_PATH, new_callable=AsyncMock),
+        ):
+            await task.run(
+                _base(
+                    "snapshot",
+                    core_rif_cidrs=["2001:db8:c0::/127", "2001:db8:c1::/127"],
+                )
+            )
+            await task.run(_base("set_metrics", metrics=[10, 1000]))
+            await task.run(_base("restore"))
+
+        self.assertEqual(driver.overrides, [None, None])
+        self.assertIn(
+            "breeze lm clear-adj-metric-override --yes --quiet r2 fboss2011",
+            driver.commands,
+        )
+        self.assertIn(
+            "breeze lm clear-adj-metric-override --yes --quiet r2 fboss2012",
             driver.commands,
         )
 

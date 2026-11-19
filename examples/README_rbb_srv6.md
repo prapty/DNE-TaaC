@@ -518,6 +518,9 @@ TAAC threshold/API; route ownership, throughput, and loss remain enforced.
 Examples for an already configured lab:
 
 ```bash
+# Run every suite sequentially and print a complete PASS/FAIL summary.
+./scripts/run-rbb-srv6.sh --suite all --with-traffic
+
 # Device-only common-state checks.
 ./scripts/run-rbb-srv6.sh --suite state-audit
 

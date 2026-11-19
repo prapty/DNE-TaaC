@@ -111,6 +111,24 @@ class RbbSrv6MySidTest(unittest.TestCase):
             destinations[1],
             {C.SRV6_USID_HEAD, C.SRV6_USID_MID, C.SRV6_DECAP_SID},
         )
+        tc32_headers = items[1].packet_headers or []
+        self.assertEqual(
+            [header.query.regex for header in tc32_headers],
+            ["^ethernet$", "^ipv6$", "^ipv4$", "^udp$"],
+        )
+        outer_next_header = next(
+            field
+            for field in tc32_headers[1].fields or []
+            if field.query.regex == "Next Header"
+        )
+        self.assertEqual(
+            json.loads(outer_next_header.attrs_json),
+            {"Auto": False, "SingleValue": 4},
+        )
+        self.assertEqual(
+            [header.query.regex for header in items[2].packet_headers or []],
+            ["^ethernet$", "^ipv6$"],
+        )
 
     def test_tc17_requires_state_asic_and_midpoint_delta(self) -> None:
         playbook = (self.config.playbooks or [])[1]
@@ -222,6 +240,27 @@ class RbbSrv6MySidTest(unittest.TestCase):
                 for item in tc32_counters
             )
         )
+        adjacency = [
+            params
+            for name, params in _tasks(tc32)
+            if name == "rbb_srv6_mysid_adjacency"
+        ]
+        self.assertEqual(
+            [item["action"] for item in adjacency], ["unresolve", "restore"]
+        )
+        self.assertTrue(all(item["interface"] == "eth1/2" for item in adjacency))
+        cleanup = [
+            json.loads(step.input_json)["task"]
+            for step in tc32.cleanup_steps or []
+            if step.name == StepName.RUN_TASK_STEP
+        ]
+        cleanup_adjacency = next(
+            json.loads(task["params"]["json_params"])
+            for task in cleanup
+            if task["task_name"] == "rbb_srv6_mysid_adjacency"
+        )
+        self.assertEqual(cleanup_adjacency["action"], "restore")
+        self.assertTrue(cleanup_adjacency["best_effort"])
 
         tc106_counters = [p for n, p in _tasks(tc106) if n == "rbb_srv6_counter_delta"]
         self.assertEqual(

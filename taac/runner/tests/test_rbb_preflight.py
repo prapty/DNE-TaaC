@@ -142,23 +142,36 @@ class TestRbbPreflight(TestCase):
         )
 
     def _run_wrapper_with_fake_docker(
-        self, arguments: list[str]
+        self,
+        arguments: list[str],
+        *,
+        environment_overrides: dict[str, str] | None = None,
     ) -> tuple[subprocess.CompletedProcess, list[str]]:
         """Run the public wrapper and return the final Docker argv."""
         fake_bin = Path(self.temp_dir.name) / "suite-bin"
         fake_bin.mkdir(exist_ok=True)
         docker_args = Path(self.temp_dir.name) / "suite-docker-args"
+        docker_args.unlink(missing_ok=True)
         fake_docker = fake_bin / "docker"
         fake_docker.write_text(
             "#!/bin/sh\n"
             'if [ "$1" = image ] && [ "$2" = inspect ]; then exit 0; fi\n'
-            'printf \'%s\\n\' "$@" > "$TAAC_TEST_DOCKER_ARGS"\n',
+            'printf \'%s\\n\' __TAAC_DOCKER_CALL__ '
+            '"TAAC_RBB_INCLUDE_TRAFFIC=${TAAC_RBB_INCLUDE_TRAFFIC:-}" '
+            '"TAAC_RBB_EDGE_EBGP=${TAAC_RBB_EDGE_EBGP:-}" "$@" '
+            '>> "$TAAC_TEST_DOCKER_ARGS"\n'
+            'for arg in "$@"; do\n'
+            '  if [ -n "${TAAC_TEST_FAIL_CONFIG:-}" ] && '
+            '[ "$arg" = "$TAAC_TEST_FAIL_CONFIG" ]; then '
+            'exit "${TAAC_TEST_FAIL_STATUS:-7}"; fi\n'
+            'done\n',
             encoding="utf-8",
         )
         fake_docker.chmod(0o755)
         environment = self._clean_environment()
         environment["PATH"] = f"{fake_bin}:{environment.get('PATH', '')}"
         environment["TAAC_TEST_DOCKER_ARGS"] = str(docker_args)
+        environment.update(environment_overrides or {})
         result = subprocess.run(
             [
                 str(self.runner),
@@ -790,6 +803,84 @@ class TestRbbPreflight(TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("localhost/fboss-taac:current", forwarded)
+
+    def test_wrapper_all_runs_every_suite_in_order(self) -> None:
+        self._write_valid_config()
+
+        result, forwarded = self._run_wrapper_with_fake_docker(
+            ["--suite", "all", "--with-traffic", "--setup-dut-edges"]
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = []
+        current = []
+        for argument in forwarded:
+            if argument == "__TAAC_DOCKER_CALL__":
+                if current:
+                    calls.append(current)
+                current = []
+            else:
+                current.append(argument)
+        if current:
+            calls.append(current)
+        self.assertEqual(len(calls), 10)
+        expected_configs = (
+            "/workspace/examples/rbb_srv6_3_usids_config.py",
+            "/workspace/examples/rbb_state_audit_config.py",
+            "/workspace/examples/rbb_named_nhg_config.py",
+            "/workspace/examples/rbb_traffic_foundation_config.py",
+            "/workspace/examples/rbb_core_ecmp_config.py",
+            "/workspace/examples/rbb_dual_stack_traffic_config.py",
+            "/workspace/examples/rbb_srv6_tail_decap_config.py",
+            "/workspace/examples/rbb_srv6_mysid_config.py",
+            "/workspace/examples/rbb_srv6_wire_config.py",
+            "/workspace/examples/rbb_srv6_resilience_config.py",
+        )
+        for call, expected_config in zip(calls, expected_configs, strict=True):
+            self.assertIn(expected_config, call)
+        state_audit_call = calls[1]
+        self.assertIn("TAAC_RBB_INCLUDE_TRAFFIC=0", state_audit_call)
+        self.assertIn("TAAC_RBB_EDGE_EBGP=0", state_audit_call)
+        for call in calls[:1] + calls[2:]:
+            self.assertIn("TAAC_RBB_INCLUDE_TRAFFIC=1", call)
+            self.assertIn("TAAC_RBB_EDGE_EBGP=1", call)
+
+    def test_wrapper_all_continues_after_failure_and_summarizes(self) -> None:
+        self._write_valid_config()
+
+        result, forwarded = self._run_wrapper_with_fake_docker(
+            ["--suite", "all", "--with-traffic"],
+            environment_overrides={
+                "TAAC_TEST_FAIL_CONFIG": (
+                    "/workspace/examples/rbb_named_nhg_config.py"
+                )
+            },
+        )
+
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(forwarded.count("__TAAC_DOCKER_CALL__"), 10)
+        self.assertIn("FAIL  named-nhg-lifecycle (exit 7)", result.stdout)
+        self.assertIn("PASS  resilience", result.stdout)
+        self.assertIn("Passed: 9", result.stdout)
+        self.assertIn("Failed: 1", result.stdout)
+
+    def test_wrapper_all_stops_after_interrupted_child(self) -> None:
+        self._write_valid_config()
+
+        result, forwarded = self._run_wrapper_with_fake_docker(
+            ["--suite", "all", "--with-traffic"],
+            environment_overrides={
+                "TAAC_TEST_FAIL_CONFIG": (
+                    "/workspace/examples/rbb_named_nhg_config.py"
+                ),
+                "TAAC_TEST_FAIL_STATUS": "130",
+            },
+        )
+
+        self.assertEqual(result.returncode, 130)
+        self.assertEqual(forwarded.count("__TAAC_DOCKER_CALL__"), 3)
+        self.assertIn("Interrupted SRv6 suite: named-nhg-lifecycle", result.stderr)
+        self.assertNotIn("Running SRv6 suite: traffic-foundation", result.stdout)
 
     def test_wrapper_rejects_unknown_and_incompatible_suite_modes(self) -> None:
         for arguments, message in (

@@ -396,6 +396,32 @@ def _negative_playbook(
     sid: str,
 ) -> Playbook:
     r2 = topology.r2.hostname
+    is_tc32 = testplan_id.endswith("32")
+    adjacency_pc = topology.r2.core_pcs[-1] if is_tc32 else None
+    if adjacency_pc is not None and not adjacency_pc.members:
+        raise ValueError(f"{r2}: TC-32 MySID adjacency has no core member")
+    adjacency_interface = adjacency_pc.members[0] if adjacency_pc else None
+
+    def adjacency_step(action: str, *, best_effort: bool = False) -> Step:
+        if adjacency_interface is None:
+            raise ValueError("TC-32 adjacency interface is unavailable")
+        return create_run_task_step(
+            task_name="rbb_srv6_mysid_adjacency",
+            params_dict={
+                "hostname": r2,
+                "action": action,
+                "interface": adjacency_interface,
+                "sid": sid,
+                "timeout_sec": 30,
+                "best_effort": best_effort,
+            },
+            description=(
+                f"{testplan_id} {action} adjacency MySID {sid} via "
+                f"{adjacency_interface}"
+            ),
+            start_traffic=False,
+        )
+
     drop = srv6_ingress_drop_counter_spec("r2", counter, topology)
     egress = srv6_possible_egress_counter_spec("r2", topology)
     snapshots = [_counter_step_no_implicit_start(r2, "snapshot", drop)]
@@ -406,14 +432,14 @@ def _negative_playbook(
     return Playbook(
         name=(
             "rbb_p2_tc32_local_sid_drop"
-            if testplan_id.endswith("32")
+            if is_tc32
             else "rbb_p2_tc106_unknown_usid"
         ),
         description=(
             f"{testplan_id} [FULL]: "
             + (
                 "SAI local-SID-drop telemetry"
-                if testplan_id.endswith("32")
+                if is_tc32
                 else "unknown-uSID clean drop"
             )
         ),
@@ -432,7 +458,7 @@ def _negative_playbook(
                                         C.SRV6_BEHAVIOR_ADJACENCY,
                                     ]
                                 }
-                                if testplan_id.endswith("32")
+                                if is_tc32
                                 else {"expect_absent": [sid]}
                             ),
                         },
@@ -441,6 +467,19 @@ def _negative_playbook(
                 description=(
                     f"{testplan_id} prove the injected SID's MySID membership"
                 ),
+            ),
+            *(
+                [
+                    create_steps_stage(
+                        steps=[adjacency_step("unresolve")],
+                        description=(
+                            f"{testplan_id} make the configured adjacency MySID "
+                            "unresolved"
+                        ),
+                    )
+                ]
+                if is_tc32
+                else []
             ),
             create_steps_stage(
                 steps=[
@@ -462,11 +501,26 @@ def _negative_playbook(
                     create_stop_traffic_step(),
                 ],
                 description=f"{testplan_id} IXIA loss and exact ASIC counter evidence",
-            )
+            ),
+            *(
+                [
+                    create_steps_stage(
+                        steps=[adjacency_step("restore")],
+                        description=f"{testplan_id} restore the MySID adjacency",
+                    )
+                ]
+                if is_tc32
+                else []
+            ),
         ],
         prechecks=[],
         postchecks=[],
-        cleanup_steps=[create_stop_traffic_step()],
+        cleanup_steps=[
+            create_stop_traffic_step(),
+            *(
+                [adjacency_step("restore", best_effort=True)] if is_tc32 else []
+            ),
+        ],
         device_regexes=[f"^{re.escape(r2)}$"],
     )
 
